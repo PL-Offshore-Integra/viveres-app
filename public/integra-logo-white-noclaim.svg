@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<svg id="Capa_1" data-name="Capa 1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 684.37 266.5">
+  <defs>
+    <linearGradient id="Degradado_sin_nombre" data-name="Degradado sin nombre" x1="111.07" y1="229.5" x2="201.14" y2="177.5" gradientTransform="translate(0 267) scale(1 -1)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#076f7c"></stop>
+      <stop offset="1" stop-color="#056c74"></stop>
+    </linearGradient>
+    <mask id="mask" x="15" y="70.5" width="192.14" height="175" maskUnits="userSpaceOnUse">
+      <g id="iring">
+        <rect x="39.57" y="70.5" width="150" height="150" fill="#fff"></rect>
+        <path d="M111.07,141.5l90.07-52M111.07,141.5v104M111.07,141.5l-90.07,52" fill="none" stroke="#000" stroke-width="24"></path>
+      </g>
+    </mask>
+  </defs>
+  <path d="M21,89.5v104" fill="none" stroke="#FFFFFF" stroke-width="15.5"></path>
+  <path d="M201.14,89.5v104" fill="none" stroke="#FFFFFF" stroke-width="15.5"></path>
+  <path d="M21,89.5l95.27-55" fill="none" stroke="#FFFFFF" stroke-width="15.5"></path>
+  <path d="M105.87,34.5l95.27,55" fill="none" stroke="#FFFFFF" stroke-width="15.5"></path>
+  <path d="M21,193.5l90.07,52" fill="none" stroke="#FFFFFF" stroke-width="15.5"></path>
+  <path d="M111.07,245.5l90.07-52" fill="none" stroke="#FFFFFF" stroke-width="15.5"></path>
+  <path d="M111.07,141.5l90.07-52" fill="none" stroke="#FFFFFF" stroke-width="16"></path>
+  <path d="M111.07,141.5v104" fill="#FFFFFF" stroke="#FFFFFF" stroke-miterlimit="10" stroke-width="16"></path>
+  <path d="M111.07,141.5l-90.07,52" fill="none" stroke="#FFFFFF" stroke-width="16"></path>
+  <path d="M66.9,116l-45.9-26.5" fill="none" stroke="#FFFFFF" stroke-width="16"></path>
+  <path d="M155.24,167l45.9,26.5" fill="none" stroke="#FFFFFF" stroke-width="15.5"></path>
+  <path d="M111.07,90.5V30.5" fill="none" stroke="#FFFFFF" stroke-width="16"></path>
+  <path d="M111.07,0l-35.2,48.8h70.4L111.07,0Z" fill="#FFFFFF"></path>
+  <circle cx="201.14" cy="89.5" r="21" fill="#FFFFFF"></circle>
+  <circle cx="201.14" cy="193.5" r="21" fill="#FFFFFF"></circle>
+  <circle cx="111.07" cy="245.5" r="21" fill="#FFFFFF"></circle>
+  <circle cx="21" cy="193.5" r="21" fill="#FFFFFF"></circle>
+  <circle cx="21" cy="89.5" r="21" fill="#FFFFFF"></circle>
+  <circle cx="111.07" cy="141.5" r="24" fill="#FFFFFF"></circle>
+  <g transform="translate(0,19)"><path d="M277.37,146.5h-14.8v-64h14.8v64ZM306.17,146.5h-14.6v-64h12.3l31.8,38.9v-38.9h14.6v64h-12.2l-31.9-38.9v38.9ZM393.87,146.5h-14.8v-51.9h-20.5v-12.1h55.8v12.1h-20.5v51.9ZM472.17,146.5h-49.6v-64h48.4v11.9h-33.7v13.9h29.7v11.5h-29.7v14.8h34.9v11.9ZM514.47,147.6h0c-5.07,0-9.7-.8-13.9-2.4-4.27-1.6-7.97-3.9-11.1-6.9-3.13-3-5.57-6.5-7.3-10.5-1.73-4.07-2.6-8.5-2.6-13.3s.87-9.23,2.6-13.3c1.73-4,4.2-7.5,7.4-10.5,3.13-3,6.83-5.3,11.1-6.9s8.97-2.4,14.1-2.4h0c5.67,0,10.77.93,15.3,2.8,4.53,1.93,8.37,4.7,11.5,8.3h0l-9.5,8.7c-2.33-2.4-4.87-4.2-7.6-5.4-2.73-1.2-5.73-1.8-9-1.8h0c-3.07,0-5.9.5-8.5,1.5-2.53.93-4.73,2.33-6.6,4.2-1.87,1.8-3.3,3.97-4.3,6.5-1,2.47-1.5,5.23-1.5,8.3h0c0,3,.5,5.73,1.5,8.2,1,2.53,2.43,4.73,4.3,6.6,1.87,1.87,4.07,3.27,6.6,4.2,2.53,1,5.3,1.5,8.3,1.5h0c2.93,0,5.8-.5,8.6-1.5h0c1-.27,2-.67,3-1.2h0v-18.8h13.5v26c-3.47,2.6-7.5,4.6-12.1,6s-9.2,2.1-13.8,2.1ZM568.37,146.5h-14.8v-64h27.3c8.93,0,15.87,2.07,20.8,6.2,4.93,4.07,7.4,9.73,7.4,17h0c0,4.8-1.13,8.9-3.4,12.3-2.27,3.47-5.47,6.1-9.6,7.9h0c-.07,0-.1.03-.1.1h0l14.3,20.5h-16l-12.3-17.8h-13.6v17.8ZM568.37,94.6v22.3h12.1c4.53,0,7.93-1,10.2-3s3.4-4.73,3.4-8.2h0c0-3.53-1.13-6.27-3.4-8.2-2.27-1.93-5.67-2.9-10.2-2.9h-12.1ZM627.77,146.5h-15.2l28.5-64h14.7l28.6,64h-15.6l-5.6-13.7h-29.8l-5.6,13.7ZM638.17,121.5h20.3l-10.2-24.5-10.1,24.5Z" fill="#FFFFFF"></path></g>
+  <g mask="url(#mask)">
+    <circle cx="111.07" cy="141.5" r="51" fill="none" stroke="#FFFFFF" stroke-width="16"></circle>
+  </g>
+</svg>

@@ -104,6 +104,31 @@ const api = {
     const { data } = supabase.storage.from("cotizaciones").getPublicUrl(path);
     return data.publicUrl;
   },
+  async getSolicitantes() {
+    const { data, error } = await supabase
+      .from("viveres_solicitantes")
+      .select("*")
+      .eq("activo", true)
+      .order("nombre");
+    if (error) throw error;
+    return data || [];
+  },
+  async crearSolicitante(nombre) {
+    const { data, error } = await supabase
+      .from("viveres_solicitantes")
+      .insert([{ nombre: nombre.trim(), activo: true }])
+      .select()
+      .maybeSingle();
+    if (error) throw error;
+    return data;
+  },
+  async eliminarSolicitante(id) {
+    const { error } = await supabase
+      .from("viveres_solicitantes")
+      .delete()
+      .eq("id", id);
+    if (error) throw error;
+  },
 };
 
 //  CSS 
@@ -514,7 +539,7 @@ function exportarParaProveedor(pedido, items) {
 }
 
 //  FORM PEDIDO 
-function FormPedido({ pedidoInicial, catalogoInicial, parametros, onSave, onCancel, notify }) {
+function FormPedido({ pedidoInicial, catalogoInicial, parametros, solicitantes = [], onSave, onCancel, notify }) {
   const [step, setStep] = useState(1);
   const [catalogo] = useState(catalogoInicial || []);
   const [saving, setSaving] = useState(false);
@@ -575,7 +600,7 @@ function FormPedido({ pedidoInicial, catalogoInicial, parametros, onSave, onCanc
       <div className="card-title">Datos del pedido</div>
       <div className="form-grid-3">
         <FG label="Base / Buque *"><select value={cabecera.base_buque} onChange={e => setCab("base_buque", e.target.value)}><option value="">Seleccionar...</option>{BASES.map(b => <option key={b}>{b}</option>)}</select></FG>
-        <FG label="Solicitado por *"><input value={cabecera.solicitado_por} onChange={e => setCab("solicitado_por", e.target.value)} placeholder="Nombre del cocinero/encargado" /></FG>
+        <FG label="Solicitado por *"><select value={cabecera.solicitado_por} onChange={e => setCab("solicitado_por", e.target.value)}><option value="">Seleccionar...</option>{solicitantes.map(s => <option key={s.id} value={s.nombre}>{s.nombre}</option>)}{cabecera.solicitado_por && !solicitantes.some(s => s.nombre === cabecera.solicitado_por) && <option value={cabecera.solicitado_por}>{cabecera.solicitado_por}</option>}</select></FG>
         <FG label="Proyecto"><input value={cabecera.proyecto || ""} onChange={e => setCab("proyecto", e.target.value)} placeholder="Ej: OP-2026-003" /></FG>
       </div>
       <div className="form-grid">
@@ -742,10 +767,15 @@ function FormPedido({ pedidoInicial, catalogoInicial, parametros, onSave, onCanc
 function PageNuevo({ notify, onSaved, onCancel }) {
   const [catalogo, setCatalogo] = useState([]);
   const [parametros, setParametros] = useState([]);
+  const [solicitantes, setSolicitantes] = useState([]);
   const [loading, setLoading] = useState(true);
-  useEffect(() => { Promise.all([api.getCatalogo(), api.getParametros()]).then(([cat, par]) => { setCatalogo(cat); setParametros(par); setLoading(false); }); }, []);
+  useEffect(() => {
+    Promise.all([api.getCatalogo(), api.getParametros(), api.getSolicitantes()])
+      .then(([cat, par, sol]) => { setCatalogo(cat); setParametros(par); setSolicitantes(sol); setLoading(false); })
+      .catch(e => { notify("Error al cargar datos: " + e.message, "error"); setLoading(false); });
+  }, [notify]);
   if (loading) return <div className="loading"><span className="spin">◌</span> Cargando catálogo...</div>;
-  return <FormPedido catalogoInicial={catalogo} parametros={parametros} onSave={async (cab, items) => { await api.crearPedido(cab, items); onSaved(); }} onCancel={onCancel} notify={notify} />;
+  return <FormPedido catalogoInicial={catalogo} parametros={parametros} solicitantes={solicitantes} onSave={async (cab, items) => { await api.crearPedido(cab, items); onSaved(); }} onCancel={onCancel} notify={notify} />;
 }
 
 //  MODAL: REVISAR PEDIDO 
@@ -1381,6 +1411,129 @@ function PageHistorial({ onNuevo, notify }) {
 
 //  PAGE: CATÁLOGO 
 const CATEGORIAS_CATALOGO = ["Almacén","Bebidas","Carnicería","Electro","Fiambrería","Frutas","Huevos","Lácteos","Limpieza","Pan","Pastas","Pescadería","Quesos","Snack y Postres","Verduras","Otro"];
+
+//  PAGE SOLICITANTES 
+function PageSolicitantes({ notify }) {
+  const [solicitantes, setSolicitantes] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [nuevo, setNuevo] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [eliminandoId, setEliminandoId] = useState(null);
+
+  useEffect(() => {
+    api.getSolicitantes()
+      .then(d => { setSolicitantes(d); setLoading(false); })
+      .catch(e => { notify("Error: " + e.message, "error"); setLoading(false); });
+  }, [notify]);
+
+  const handleAgregar = async () => {
+    const nombre = nuevo.trim();
+    if (!nombre) return;
+    if (solicitantes.some(s => s.nombre.toLowerCase() === nombre.toLowerCase())) {
+      notify("Ese nombre ya existe", "warn");
+      return;
+    }
+    setSaving(true);
+    try {
+      const data = await api.crearSolicitante(nombre);
+      if (data) {
+        setSolicitantes(prev => [...prev, data].sort((a, b) => a.nombre.localeCompare(b.nombre, "es")));
+      }
+      setNuevo("");
+      notify("Solicitante agregado", "success");
+    } catch (e) {
+      notify("Error: " + e.message, "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleEliminar = async (s) => {
+    if (!window.confirm(`¿Quitar a "${s.nombre}" de la lista de solicitantes?`)) return;
+    setEliminandoId(s.id);
+    const previo = solicitantes;
+    setSolicitantes(prev => prev.filter(x => x.id !== s.id)); // optimista
+    try {
+      await api.eliminarSolicitante(s.id);
+      notify("Solicitante eliminado", "warn");
+    } catch (e) {
+      setSolicitantes(previo); // revert
+      notify("Error: " + e.message, "error");
+    } finally {
+      setEliminandoId(null);
+    }
+  };
+
+  const handleKey = (e) => { if (e.key === "Enter") handleAgregar(); };
+
+  return (
+    <div>
+      <div className="card" style={{ maxWidth: 640 }}>
+        <div className="card-title">Agregar solicitante</div>
+        <div className="info-box accent mb12" style={{ fontSize: 12 }}>
+          Los nombres cargados acá aparecen en el selector "Solicitado por" al crear un pedido. Estandarizá los nombres para mantener el historial consistente.
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+          <div className="fg" style={{ flex: 1 }}>
+            <label>Nombre y apellido</label>
+            <input value={nuevo} onChange={e => setNuevo(e.target.value)} onKeyDown={handleKey} placeholder="Ej: Juan Pérez" />
+          </div>
+          <button className="btn btn-primary" onClick={handleAgregar} disabled={saving || !nuevo.trim()}>
+            {saving ? "Guardando..." : "+ Agregar"}
+          </button>
+        </div>
+      </div>
+
+      {loading ? <div className="loading"><span className="spin">◌</span></div> :
+        <div className="card" style={{ padding: 0, overflow: "hidden", maxWidth: 640 }}>
+          <div className="card-title" style={{ padding: "16px 24px 0" }}>
+            Solicitantes habilitados
+            <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--muted)", textTransform: "none", letterSpacing: 0 }}>{solicitantes.length} activo{solicitantes.length !== 1 ? "s" : ""}</span>
+          </div>
+          {solicitantes.length === 0 ? (
+            <div className="manual-empty" style={{ margin: 24 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "var(--navy)" }}>Sin solicitantes cargados</div>
+              <div style={{ fontSize: 12, color: "var(--muted)" }}>Agregá el primer nombre usando el formulario de arriba.</div>
+            </div>
+          ) : (
+            <div className="table-wrap">
+              <table className="items-edit">
+                <thead>
+                  <tr>
+                    <th>Nombre</th>
+                    <th style={{ width: 70 }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {solicitantes.map(s => {
+                    const eliminando = eliminandoId === s.id;
+                    return (
+                      <tr key={s.id}>
+                        <td style={{ fontSize: 13, fontWeight: 500 }}>{s.nombre}</td>
+                        <td>
+                          <button
+                            onClick={() => handleEliminar(s)}
+                            disabled={eliminando}
+                            title="Quitar solicitante"
+                            style={{ background: "none", border: "none", color: "var(--muted2)", cursor: "pointer", fontSize: 14, padding: "3px 5px", borderRadius: 4, opacity: eliminando ? 0.5 : 1, transition: "color .12s" }}
+                            onMouseEnter={e => e.currentTarget.style.color = "var(--danger)"}
+                            onMouseLeave={e => e.currentTarget.style.color = "var(--muted2)"}
+                          >
+                            {eliminando ? "..." : "✕"}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      }
+    </div>
+  );
+}
 
 function PageCatalogo({ notify }) {
   const [catalogo, setCatalogo] = useState([]);
@@ -2151,6 +2304,7 @@ function ViveresApp() {
     panel:  <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9.5 4v16" /></>,
     bell:   <><path d="M18 8a6 6 0 1 0-12 0c0 7-3 8-3 8h18s-3-1-3-8" /><path d="M13.7 21a2 2 0 0 1-3.4 0" /></>,
     help:   <><circle cx="12" cy="12" r="9" /><path d="M9.5 9.5a2.5 2.5 0 1 1 3.6 2.3c-.7.4-1.1 1-1.1 1.7v.3" /><path d="M12 17.5h.01" /></>,
+    users:  <><path d="M16 20v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 18.5V20" /><circle cx="10" cy="8" r="3.2" /><path d="M20 20v-1.5a3.5 3.5 0 0 0-2.6-3.4M15.5 4.8a3.2 3.2 0 0 1 0 6.2" /></>,
   };
 
   const SECCIONES = {
@@ -2159,6 +2313,7 @@ function ViveresApp() {
     historial: { grupo: "Pedidos",     titulo: "Historial de pedidos", sub: "Todos los pedidos cargados, con su estado y su costo por cabeza y día." },
     tracker:   { grupo: "Seguimiento", titulo: "Seguimiento de entregas", sub: "Avance de cada pedido desde la compra hasta la recepción a bordo." },
     catalogo:  { grupo: "Datos",       titulo: "Catálogo de víveres",  sub: "Artículos habilitados, con unidad, rubro y precio de referencia." },
+    solicitantes: { grupo: "Datos",    titulo: "Solicitantes",         sub: "Nombres habilitados para crear pedidos. Estandarizá quién puede solicitar víveres." },
     pivot:     { grupo: "Datos",       titulo: "Análisis pivot",       sub: "Consumo y costo cruzados por embarcación, rubro y período." },
   };
 
@@ -2174,8 +2329,9 @@ function ViveresApp() {
       { id: "tracker", icon: "chart", label: "Seguimiento de entregas", count: 0 },
     ]},
     { titulo: "Datos", items: [
-      { id: "catalogo", icon: "box",  label: "Catálogo",       count: 0 },
-      { id: "pivot",    icon: "grid", label: "Análisis pivot", count: 0 },
+      { id: "catalogo",     icon: "box",   label: "Catálogo",       count: 0 },
+      { id: "solicitantes", icon: "users", label: "Solicitantes",   count: 0 },
+      { id: "pivot",        icon: "grid",  label: "Análisis pivot", count: 0 },
     ]},
   ];
 
@@ -2275,6 +2431,7 @@ function ViveresApp() {
             {page === "historial" && <PageHistorial onNuevo={() => setPage("nuevo")} notify={notify} />}
             {page === "tracker"   && <PageTracker notify={notify} />}
             {page === "catalogo"  && <PageCatalogo notify={notify} />}
+            {page === "solicitantes" && <PageSolicitantes notify={notify} />}
             {page === "pivot"     && <PagePivot />}
           </div>
         </div>

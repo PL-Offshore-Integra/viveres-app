@@ -1545,7 +1545,7 @@ function PageCatalogo({ notify }) {
   const [savingId, setSavingId] = useState(null);
   const [eliminandoId, setEliminandoId] = useState(null);
   const [editados, setEditados] = useState({}); // id -> campos modificados
-  const [form, setForm] = useState({ codigo: "", categoria: "Almacén", subcategoria: "", temperatura: "Seco", descripcion: "", unidad: "Unidad", unidad_analisis: "Kg", volumen_peso: "1" });
+  const [form, setForm] = useState({ codigo: "", categoria: "Almacén", subcategoria: "", temperatura: "Seco", descripcion: "", unidad: "Unidad", unidad_analisis: "Kg", volumen_peso: "1", stock: "0" });
 
   useEffect(() => { api.getCatalogo().then(d => { setCatalogo(d); setLoading(false); }); }, []);
 
@@ -1571,6 +1571,7 @@ function PageCatalogo({ notify }) {
     try {
       const cambios = editados[c.id];
       if (cambios.volumen_peso !== undefined) cambios.volumen_peso = parseFloat(cambios.volumen_peso) || 1;
+      if (cambios.stock !== undefined) cambios.stock = parseFloat(cambios.stock) || 0;
       const { error } = await supabase.from("viveres_catalogo").update(cambios).eq("id", c.id);
       if (error) throw error;
       setEditados(prev => { const n = { ...prev }; delete n[c.id]; return n; });
@@ -1603,11 +1604,11 @@ function PageCatalogo({ notify }) {
     if (!form.descripcion.trim()) return alert("La descripción es obligatoria");
     setSaving(true);
     try {
-      const { data, error } = await supabase.from("viveres_catalogo").insert([{ ...form, volumen_peso: parseFloat(form.volumen_peso) || 1, activo: true }]).select().single();
+      const { data, error } = await supabase.from("viveres_catalogo").insert([{ ...form, volumen_peso: parseFloat(form.volumen_peso) || 1, stock: parseFloat(form.stock) || 0, activo: true }]).select().single();
       if (error) throw error;
       setCatalogo(prev => [...prev, data]);
       setModal(false);
-      setForm({ codigo: "", categoria: "Almacén", subcategoria: "", temperatura: "Seco", descripcion: "", unidad: "Unidad", unidad_analisis: "Kg", volumen_peso: "1" });
+      setForm({ codigo: "", categoria: "Almacén", subcategoria: "", temperatura: "Seco", descripcion: "", unidad: "Unidad", unidad_analisis: "Kg", volumen_peso: "1", stock: "0" });
       notify("Ítem agregado", "success");
     } catch (e) { alert("Error: " + e.message); }
     finally { setSaving(false); }
@@ -1657,6 +1658,7 @@ function PageCatalogo({ notify }) {
                   <th>Descripción</th>
                   <th>Unidad pedido</th>
                   <th>Unidad análisis</th>
+                  <th style={{ width: 70 }}>Stock</th>
                   <th>Vol/Peso</th>
                   <th style={{ width: 70 }}></th>
                 </tr>
@@ -1721,6 +1723,16 @@ function PageCatalogo({ notify }) {
                           {UNIDADES_ANALISIS.map(u => <option key={u}>{u}</option>)}
                         </select>
                       </td>
+                      <td style={{ width: 70 }}>
+                        <input
+                          type="number"
+                          step="1"
+                          min="0"
+                          value={getVal(c, "stock") ?? 0}
+                          onChange={e => setcampo(c.id, "stock", e.target.value)}
+                          style={mod(c, "stock") ? inStyleMod : inStyle}
+                        />
+                      </td>
                       <td style={{ width: 80 }}>
                         <input
                           type="number"
@@ -1780,6 +1792,7 @@ function PageCatalogo({ notify }) {
                 <FG label="Unidad de pedido" hint="Cómo se pide al proveedor"><select value={form.unidad} onChange={e => setF("unidad", e.target.value)}>{UNIDADES_PEDIDO.map(u => <option key={u}>{u}</option>)}</select></FG>
                 <FG label="Unidad de análisis" hint="Para el cálculo de dieta"><select value={form.unidad_analisis} onChange={e => setF("unidad_analisis", e.target.value)}>{UNIDADES_ANALISIS.map(u => <option key={u}>{u}</option>)}</select></FG>
                 <FG label="Vol/Peso por unidad" hint="Ej: 1 lata = 0.170 Kg"><input type="number" step="0.001" min="0" value={form.volumen_peso} onChange={e => setF("volumen_peso", e.target.value)} placeholder="1" /></FG>
+                <FG label="Stock" hint="Cantidad disponible actual"><input type="number" step="1" min="0" value={form.stock} onChange={e => setF("stock", e.target.value)} placeholder="0" /></FG>
               </div>
               {form.volumen_peso && parseFloat(form.volumen_peso) !== 1 && (
                 <div className="info-box accent mt8" style={{ fontSize: 11 }}>Ejemplo: 3 {form.unidad} → {(3 * parseFloat(form.volumen_peso)).toFixed(3)} {form.unidad_analisis}</div>

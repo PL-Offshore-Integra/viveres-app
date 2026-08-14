@@ -1202,6 +1202,7 @@ function PageTracker({ notify }) {
   const [selected, setSelected] = useState(null);
   const [filtroStatus, setFiltroStatus] = useState("");
   const [filtroBase, setFiltroBase] = useState("");
+  const [eliminando, setEliminando] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1210,6 +1211,24 @@ function PageTracker({ notify }) {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  const handleEliminar = async (e, p) => {
+    e.stopPropagation();
+    if (!window.confirm(`¿Eliminar el pedido de ${p.base_buque} (${p.pax} PAX × ${p.dias} días)? Se borran también sus ítems. Esta acción no se puede deshacer.`)) return;
+    setEliminando(p.id);
+    const backup = pedidos;
+    // optimistic update
+    setPedidos(prev => prev.filter(x => x.id !== p.id));
+    try {
+      await api.eliminarPedido(p.id);
+      notify("Pedido eliminado", "warn");
+    } catch (err) {
+      setPedidos(backup); // revert
+      notify("Error al eliminar: " + (err?.message || "desconocido"), "error");
+    } finally {
+      setEliminando(null);
+    }
+  };
 
   const filtrados = pedidos.filter(p => {
     if (filtroStatus && (p.tracker_status || "pendiente") !== filtroStatus) return false;
@@ -1272,6 +1291,7 @@ function PageTracker({ notify }) {
                   <th> Entrega</th>
                   <th>Remito</th>
                   <th>Notas</th>
+                  <th style={{ width: 90, textAlign: "center" }}>Acciones</th>
                 </tr>
               </thead>
               <tbody>
@@ -1292,6 +1312,16 @@ function PageTracker({ notify }) {
                         : <span style={{ fontSize: 11, color: "var(--muted2)" }}>{p.nro_remito || "—"}</span>
                       }</td>
                       <td style={{ fontSize: 11, color: "var(--muted)", maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.tracker_notas || "—"}</td>
+                      <td style={{ textAlign: "center" }} onClick={e => e.stopPropagation()}>
+                        <button
+                          className="btn btn-danger btn-sm"
+                          onClick={e => handleEliminar(e, p)}
+                          disabled={eliminando === p.id}
+                          title="Eliminar pedido"
+                        >
+                          {eliminando === p.id ? "..." : "✕"}
+                        </button>
+                      </td>
                     </tr>
                   );
                 })}
@@ -1385,7 +1415,35 @@ function PageHistorial({ onNuevo, notify }) {
   const [pedidos, setPedidos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(null);
-  useEffect(() => { api.getPedidos().then(d => { setPedidos(d); setLoading(false); }); }, []);
+  const [eliminando, setEliminando] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setPedidos(await api.getPedidos()); }
+    catch (err) { notify("Error al cargar pedidos: " + (err?.message || "desconocido"), "error"); }
+    finally { setLoading(false); }
+  }, [notify]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleEliminar = async (e, p) => {
+    e.stopPropagation();
+    if (!window.confirm(`¿Eliminar el pedido de ${p.base_buque} del ${fmtDate(p.fecha_pedido)} (${p.pax} PAX × ${p.dias} días)? Se borran también sus ítems. Esta acción no se puede deshacer.`)) return;
+    setEliminando(p.id);
+    const backup = pedidos;
+    // optimistic update
+    setPedidos(prev => prev.filter(x => x.id !== p.id));
+    try {
+      await api.eliminarPedido(p.id);
+      notify("Pedido eliminado", "warn");
+    } catch (err) {
+      setPedidos(backup); // revert
+      notify("Error al eliminar: " + (err?.message || "desconocido"), "error");
+    } finally {
+      setEliminando(null);
+    }
+  };
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 12 }}>
@@ -1401,10 +1459,20 @@ function PageHistorial({ onNuevo, notify }) {
             <div className="flex-between mb8"><div className="flex-gap"><span className="text-mono" style={{ fontSize: 11, color: "var(--accent)" }}>{fmtDate(p.fecha_pedido)}</span><span className={`badge ${s.color}`}>{s.label}</span></div><span style={{ fontSize: 10, color: "var(--muted)" }}>PL Offshore</span></div>
             <div className="req-title">{p.base_buque} — {p.pax} PAX × {p.dias} días</div>
             <div className="req-meta"><span>{p.solicitado_por}</span><span>·</span><span>{cnt} ítems</span>{p.fecha_necesaria && <><span>·</span><span style={{ color: "var(--warn)" }}>Nec: {fmtDate(p.fecha_necesaria)}</span></>}</div>
+            <div className="req-row-actions" onClick={e => e.stopPropagation()}>
+              <button
+                className="btn btn-danger btn-sm"
+                onClick={e => handleEliminar(e, p)}
+                disabled={eliminando === p.id}
+                title="Eliminar pedido"
+              >
+                {eliminando === p.id ? "..." : "✕ Eliminar"}
+              </button>
+            </div>
           </div>;
         })
       }
-      {selected && <ModalRevisar pedido={selected} onClose={() => setSelected(null)} onActualizado={() => { setSelected(null); api.getPedidos().then(d => setPedidos(d)); }} notify={notify} />}
+      {selected && <ModalRevisar pedido={selected} onClose={() => setSelected(null)} onActualizado={() => { setSelected(null); load(); }} notify={notify} />}
     </div>
   );
 }

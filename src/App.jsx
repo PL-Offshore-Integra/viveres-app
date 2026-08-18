@@ -30,6 +30,11 @@ const TRACKER_STATUS = {
 
 const fmt = (n) => n != null ? new Intl.NumberFormat("es-AR", { maximumFractionDigits: 3 }).format(n) : "—";
 const fmtDate = d => d ? new Date(d).toLocaleDateString("es-AR") : "—";
+// Cantidad pedida = lo que cargó el requisitor, siempre fija.
+// Cantidad autorizada = lo que definió el comprador al aprobar (puede ser
+// distinta). Para cualquier cálculo o vista "de lo que realmente se
+// compra/entrega" hay que usar esta cantidad efectiva.
+const cantEfectiva = (it) => (it?.cantidad_autorizada != null ? it.cantidad_autorizada : (it?.cantidad_pedida || 0));
 
 //  API 
 const api = {
@@ -60,6 +65,9 @@ const api = {
       .single();
     if (error) throw error;
     if (items?.length) {
+      // cantidad_pedida es la que carga el requisitor: queda fija para
+      // siempre. Lo que el comprador autoriza se guarda aparte, en
+      // cantidad_autorizada (ver ModalRevisar), sin tocar este valor.
       const { error: errItems } = await supabase
         .from("viveres_pedido_items")
         .insert(items.map(it => ({ ...it, pedido_id: nuevo.id })));
@@ -519,14 +527,17 @@ function calcDieta(items, paxDias) {
 }
 
 function exportarParaProveedor(pedido, items) {
-  const rows = items.filter(it => it.cantidad_pedida > 0).map(it => ({
+  // Al proveedor le mandamos lo AUTORIZADO por el comprador (si ya se
+  // definió); la cantidad pedida original queda solo como referencia.
+  const rows = items.filter(it => cantEfectiva(it) > 0).map(it => ({
     "Categoría": it.categoria || "", "Temperatura": it.temperatura || "",
     "Descripción": it.descripcion || "", "Unidad de pedido": it.unidad || "",
-    "Cantidad pedida": it.cantidad_pedida || 0, "Observaciones": "",
+    "Cantidad pedida (original)": it.cantidad_pedida || 0,
+    "Cantidad a comprar (autorizada)": cantEfectiva(it), "Observaciones": "",
   }));
   const grupos = {};
-  items.filter(it => it.cantidad_pedida > 0).forEach(it => {
-    const total = (it.cantidad_pedida || 0) * (it.volumen_peso || 1);
+  items.filter(it => cantEfectiva(it) > 0).forEach(it => {
+    const total = cantEfectiva(it) * (it.volumen_peso || 1);
     if (!grupos[it.categoria]) grupos[it.categoria] = { total: 0, unidad: it.unidad_analisis || "Kg" };
     grupos[it.categoria].total += total;
   });
@@ -785,23 +796,27 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
   const [motivoRechazo, setMotivoRechazo] = useState("");
   const [saving, setSaving] = useState(false);
   const [itemsEdit, setItemsEdit] = useState([]);
+  const [aprobadoPor, setAprobadoPor] = useState("");
 
   useEffect(() => {
+    // cantidad_pedida (lo que cargó el requisitor) nunca se toca acá.
+    // cantidad_autorizada es lo que el comprador puede ajustar; arranca
+    // igual a lo pedido y desde ahí se edita.
     const raw = (pedido.viveres_pedido_items || [])
       .filter(it => it.cantidad_pedida > 0)
-      .map(it => ({ ...it, _cantidadOriginal: it.cantidad_pedida, _eliminado: false }));
+      .map(it => ({ ...it, cantidad_autorizada: it.cantidad_autorizada ?? it.cantidad_pedida, _eliminado: false }));
     setItemsEdit(raw);
     setLoading(false);
   }, [pedido]);
 
   const itemsVisibles = itemsEdit.filter(it => !it._eliminado);
   const huboCambios = itemsEdit.some(
-    it => it._eliminado || it.cantidad_pedida !== it._cantidadOriginal
+    it => it._eliminado || it.cantidad_autorizada !== it.cantidad_pedida
   );
 
   const setCantidad = (id, val) => {
     setItemsEdit(prev =>
-      prev.map(it => it.id === id ? { ...it, cantidad_pedida: parseFloat(val) || 0 } : it)
+      prev.map(it => it.id === id ? { ...it, cantidad_autorizada: parseFloat(val) || 0 } : it)
     );
   };
 
@@ -813,7 +828,7 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
 
   const restaurarItem = (id) => {
     setItemsEdit(prev =>
-      prev.map(it => it.id === id ? { ...it, _eliminado: false, cantidad_pedida: it._cantidadOriginal } : it)
+      prev.map(it => it.id === id ? { ...it, _eliminado: false, cantidad_autorizada: it.cantidad_pedida } : it)
     );
   };
 
@@ -822,16 +837,23 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
       alert("No quedan ítems en el pedido. Rechazalo en cambio.");
       return;
     }
+    if (!aprobadoPor.trim()) {
+      alert("Ingresá quién aprueba el pedido");
+      return;
+    }
     setSaving(true);
     try {
+      // cantidad_pedida viaja intacta dentro de "rest" — nunca se pisa.
+      // Solo se guarda/actualiza cantidad_autorizada.
       const itemsAGuardar = itemsVisibles.map(
-        ({ _cantidadOriginal, _eliminado, ...rest }) => rest
+        ({ _eliminado, ...rest }) => rest
       );
       await api.actualizarItems(pedido.id, itemsAGuardar);
       await api.actualizarPedido(pedido.id, {
         status: "aprobado",
         fecha_aprobacion: new Date().toISOString(),
         tracker_status: "pendiente",
+        aprobado_por: aprobadoPor.trim(),
       });
       notify("Pedido aprobado", "success");
       onActualizado();
@@ -925,7 +947,7 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
                       </tr>
                     ) : (
                       itemsEdit.map(it => {
-                        const modificado = !it._eliminado && it.cantidad_pedida !== it._cantidadOriginal;
+                        const modificado = !it._eliminado && it.cantidad_autorizada !== it.cantidad_pedida;
                         return (
                           <tr
                             key={it.id}
@@ -945,11 +967,11 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
                               {it.descripcion}
                             </td>
                             <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.unidad}</td>
-                            {/* Cantidad original */}
+                            {/* Cantidad original — lo que cargó el requisitor, fijo, no se toca */}
                             <td style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--muted)", textAlign: "right" }}>
-                              {it._cantidadOriginal}
+                              {it.cantidad_pedida}
                             </td>
-                            {/* Cantidad editable */}
+                            {/* Cantidad autorizada — la define/edita el comprador */}
                             <td>
                               {it._eliminado ? (
                                 <button
@@ -963,7 +985,7 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
                                   <input
                                     type="number"
                                     min={0}
-                                    value={it.cantidad_pedida}
+                                    value={it.cantidad_autorizada}
                                     onChange={e => setCantidad(it.id, e.target.value)}
                                     style={{
                                       width: "100%",
@@ -1019,9 +1041,9 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
                       {itemsEdit.filter(it => it._eliminado).length} eliminado{itemsEdit.filter(it => it._eliminado).length !== 1 ? "s" : ""}
                     </span>
                   )}
-                  {itemsEdit.filter(it => !it._eliminado && it.cantidad_pedida !== it._cantidadOriginal).length > 0 && (
+                  {itemsEdit.filter(it => !it._eliminado && it.cantidad_autorizada !== it.cantidad_pedida).length > 0 && (
                     <span style={{ color: "var(--warn)" }}>
-                      {itemsEdit.filter(it => !it._eliminado && it.cantidad_pedida !== it._cantidadOriginal).length} modificado{itemsEdit.filter(it => !it._eliminado && it.cantidad_pedida !== it._cantidadOriginal).length !== 1 ? "s" : ""}
+                      {itemsEdit.filter(it => !it._eliminado && it.cantidad_autorizada !== it.cantidad_pedida).length} modificado{itemsEdit.filter(it => !it._eliminado && it.cantidad_autorizada !== it.cantidad_pedida).length !== 1 ? "s" : ""}
                     </span>
                   )}
                 </div>
@@ -1031,6 +1053,17 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
                 <button className="btn btn-ghost btn-sm" onClick={() => exportarParaProveedor(pedido, itemsVisibles)}>
                   ↓ Exportar para proveedor
                 </button>
+              </div>
+
+              <div className="form-section">Aprobación</div>
+              <div className="form-grid">
+                <FG label="Aprobado por *" hint="Queda guardado como respaldo junto con las cantidades originales y autorizadas.">
+                  <input
+                    value={aprobadoPor}
+                    onChange={e => setAprobadoPor(e.target.value)}
+                    placeholder="Nombre de quién aprueba..."
+                  />
+                </FG>
               </div>
             </div>
           )}
@@ -1060,7 +1093,7 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
             <button
               className="btn btn-success"
               onClick={handleAprobar}
-              disabled={saving || itemsVisibles.length === 0}
+              disabled={saving || itemsVisibles.length === 0 || !aprobadoPor.trim()}
             >
               {saving ? "Aprobando..." : huboCambios ? "✓ Aprobar con cambios" : "✓ Aprobar"}
             </button>
@@ -1111,6 +1144,8 @@ function ModalTrackerEditar({ pedido, onClose, onSave, notify }) {
     } finally { setSaving(false); }
   };
 
+  // El tracker/entrega refleja lo AUTORIZADO por el comprador (lo que
+  // realmente se despacha), no la cantidad pedida original.
   const items = (pedido.viveres_pedido_items || []).filter(it => it.cantidad_pedida > 0);
 
   return (
@@ -1135,6 +1170,7 @@ function ModalTrackerEditar({ pedido, onClose, onSave, notify }) {
               <div style={{ fontSize: 20 }}></div>
               <div className="fecha-step-label">Aprobación</div>
               <div className="fecha-step-val">{pedido.fecha_aprobacion ? fmtDate(pedido.fecha_aprobacion) : "—"}</div>
+              {pedido.aprobado_por && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{pedido.aprobado_por}</div>}
             </div>
             <div className="fecha-arrow">→</div>
             <div className={`fecha-step ${pedido.fecha_entrega ? "done" : ""}`}>
@@ -1178,9 +1214,9 @@ function ModalTrackerEditar({ pedido, onClose, onSave, notify }) {
             <div className="form-section">Ítems del pedido ({items.length})</div>
             <div className="table-wrap">
               <table>
-                <thead><tr><th>Categoría</th><th>Descripción</th><th>Cant.</th><th>Unidad</th></tr></thead>
+                <thead><tr><th>Categoría</th><th>Descripción</th><th>Cant. pedida</th><th>Cant. autorizada</th><th>Unidad</th></tr></thead>
                 <tbody>
-                  {items.map((it, i) => <tr key={i}><td style={{ fontSize: 11, color: "var(--muted)" }}>{it.categoria}</td><td style={{ fontWeight: 500, fontSize: 12 }}>{it.descripcion}</td><td className="text-mono" style={{ fontWeight: 700, color: "var(--accent2)" }}>{it.cantidad_pedida}</td><td style={{ fontSize: 11, color: "var(--muted)" }}>{it.unidad}</td></tr>)}
+                  {items.map((it, i) => <tr key={i}><td style={{ fontSize: 11, color: "var(--muted)" }}>{it.categoria}</td><td style={{ fontWeight: 500, fontSize: 12 }}>{it.descripcion}</td><td className="text-mono" style={{ fontSize: 12, color: "var(--muted)" }}>{it.cantidad_pedida}</td><td className="text-mono" style={{ fontWeight: 700, color: "var(--accent2)" }}>{cantEfectiva(it)}</td><td style={{ fontSize: 11, color: "var(--muted)" }}>{it.unidad}</td></tr>)}
                 </tbody>
               </table>
             </div>
@@ -1288,6 +1324,7 @@ function PageTracker({ notify }) {
                   <th>Estado</th>
                   <th> Solicitud</th>
                   <th> Aprobación</th>
+                  <th>Aprobado por</th>
                   <th> Entrega</th>
                   <th>Remito</th>
                   <th>Notas</th>
@@ -1306,6 +1343,7 @@ function PageTracker({ notify }) {
                       <td><span className={`badge ${stInfo.color}`}>{stInfo.label}</span></td>
                       <td className="text-mono" style={{ fontSize: 11, color: "var(--muted)" }}>{p.created_at ? fmtDate(p.created_at) : "—"}</td>
                       <td className="text-mono" style={{ fontSize: 11, color: p.fecha_aprobacion ? "var(--accent2)" : "var(--muted2)" }}>{p.fecha_aprobacion ? fmtDate(p.fecha_aprobacion) : "—"}</td>
+                      <td style={{ fontSize: 11, color: "var(--muted)" }}>{p.aprobado_por || "—"}</td>
                       <td className="text-mono" style={{ fontSize: 11, color: p.fecha_entrega ? "var(--accent2)" : "var(--muted2)" }}>{p.fecha_entrega ? fmtDate(p.fecha_entrega) : "—"}</td>
                       <td>{p.remito_url
                         ? <a href={p.remito_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ fontSize: 11, color: "var(--blue)" }}> {p.nro_remito || "Ver"}</a>
@@ -2037,10 +2075,12 @@ function PagePivot() {
         ? `${(p.fecha_pedido||"—").slice(0,10)} · ${p.base_buque||"?"}`
         : p.base_buque || "Sin buque";
 
-      (p.viveres_pedido_items || []).filter(it => (it.cantidad_pedida||0) > 0).forEach(it => {
+      // Usamos lo AUTORIZADO por el comprador cuando ya está aprobado; si
+      // todavía no se aprobó, no hay autorizado y se usa lo pedido.
+      (p.viveres_pedido_items || []).filter(it => cantEfectiva(it) > 0).forEach(it => {
         const base = metrica === "volumen"
-          ? (it.cantidad_pedida||0) * (it.volumen_peso||1)
-          : (it.cantidad_pedida||0);
+          ? cantEfectiva(it) * (it.volumen_peso||1)
+          : cantEfectiva(it);
         const valor = columnas === "dia" ? base / dias : columnas === "pax_dia" ? base / paxDias : base;
 
         const filaKey = filas === "item"         ? (it.descripcion   || "—")
@@ -2077,13 +2117,13 @@ function PagePivot() {
         ? `${(p.fecha_pedido||"—").slice(0,10)} · ${p.base_buque||"?"}`
         : p.base_buque || "Sin buque";
       (p.viveres_pedido_items||[]).filter(it => {
-        if ((it.cantidad_pedida||0) <= 0) return false;
+        if (cantEfectiva(it) <= 0) return false;
         if (filas === "categoria"    && (it.categoria    ||"Sin categoría")    !== fk) return false;
         if (filas === "subcategoria" && (it.subcategoria ||"Sin subcategoría") !== fk) return false;
         if (filas === "buque"        && (p.base_buque    ||"—")               !== fk) return false;
         return true;
       }).forEach(it => {
-        const base = metrica === "volumen" ? (it.cantidad_pedida||0)*(it.volumen_peso||1) : (it.cantidad_pedida||0);
+        const base = metrica === "volumen" ? cantEfectiva(it)*(it.volumen_peso||1) : cantEfectiva(it);
         const valor = columnas === "dia" ? base/dias : columnas === "pax_dia" ? base/paxDias : base;
         const desc = it.descripcion || "—";
         if (!subMap.has(desc)) subMap.set(desc, new Map());

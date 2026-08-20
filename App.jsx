@@ -1454,7 +1454,7 @@ function FormStockVuelta({ catalogoInicial, solicitantes = [], onSave, onCancel,
     descripcion: c.descripcion,
     categoria: c.categoria,
     temperatura: c.temperatura || "",
-    unidad_analisis: c.unidad_analisis || "Kg",
+    unidad: c.unidad || "Unidad",
     stock: "",
   })));
   const [filtroCateg, setFiltroCateg] = useState("");
@@ -1484,7 +1484,7 @@ function FormStockVuelta({ catalogoInicial, solicitantes = [], onSave, onCancel,
           catalogo_id: it.catalogo_id,
           descripcion: it.descripcion,
           categoria: it.categoria,
-          unidad_analisis: it.unidad_analisis,
+          unidad_analisis: it.unidad, // guardamos la unidad de pedido (Unidad, Kg, Botella, etc.), no la de análisis
           stock: parseFloat(it.stock) || 0,
         }));
       if (itemsAGuardar.length === 0) { alert("Cargá el stock de al menos un ítem"); setSaving(false); return; }
@@ -1536,7 +1536,7 @@ function FormStockVuelta({ catalogoInicial, solicitantes = [], onSave, onCancel,
                 <th>Temp.</th>
                 <th>Categoría</th>
                 <th>Descripción</th>
-                <th>Unidad análisis</th>
+                <th>Unidad</th>
                 <th style={{ width: 110 }}>Stock a bordo</th>
               </tr>
             </thead>
@@ -1548,11 +1548,11 @@ function FormStockVuelta({ catalogoInicial, solicitantes = [], onSave, onCancel,
                     <td><TempBadge temp={it.temperatura} /></td>
                     <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.categoria}</td>
                     <td style={{ fontSize: 12 }}>{it.descripcion}</td>
-                    <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.unidad_analisis}</td>
+                    <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.unidad}</td>
                     <td>
                       <input
                         type="number"
-                        step="0.001"
+                        step="1"
                         min="0"
                         value={it.stock}
                         placeholder="0"

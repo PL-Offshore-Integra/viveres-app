@@ -137,6 +137,36 @@ const api = {
       .eq("id", id);
     if (error) throw error;
   },
+  async getStockVuelta() {
+    const { data, error } = await supabase
+      .from("viveres_stock_vuelta")
+      .select("*, viveres_stock_vuelta_items(*)")
+      .order("fecha", { ascending: false })
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    return data || [];
+  },
+  async crearStockVuelta(cabecera, items) {
+    const { data: nuevo, error } = await supabase
+      .from("viveres_stock_vuelta")
+      .insert([{ ...cabecera }])
+      .select()
+      .single();
+    if (error) throw error;
+    if (items?.length) {
+      const { error: errItems } = await supabase
+        .from("viveres_stock_vuelta_items")
+        .insert(items.map(it => ({ ...it, stock_vuelta_id: nuevo.id })));
+      if (errItems) throw errItems;
+    }
+    return nuevo;
+  },
+  async eliminarStockVuelta(id) {
+    const { error: errItems } = await supabase.from("viveres_stock_vuelta_items").delete().eq("stock_vuelta_id", id);
+    if (errItems) throw errItems;
+    const { error } = await supabase.from("viveres_stock_vuelta").delete().eq("id", id);
+    if (error) throw error;
+  },
 };
 
 //  CSS 
@@ -550,7 +580,7 @@ function exportarParaProveedor(pedido, items) {
 }
 
 //  FORM PEDIDO 
-function FormPedido({ pedidoInicial, catalogoInicial, parametros, solicitantes = [], onSave, onCancel, notify }) {
+function FormPedido({ pedidoInicial, catalogoInicial, parametros, solicitantes = [], stockVuelta = [], onSave, onCancel, notify }) {
   const [step, setStep] = useState(1);
   const [catalogo] = useState(catalogoInicial || []);
   const [saving, setSaving] = useState(false);
@@ -579,9 +609,32 @@ function FormPedido({ pedidoInicial, catalogoInicial, parametros, solicitantes =
 
   const blankManual = () => ({ id: `m_${Date.now()}_${Math.random()}`, catalogo_id: null, descripcion: "", categoria: "Almacén", temperatura: "Seco", unidad: "Unidad", unidad_analisis: "Kg", volumen_peso: 1, stock_actual: 0, cantidad_pedida: 0 });
   const setCab = (k, v) => setCabecera(c => ({ ...c, [k]: v }));
-  const setItem = (id, k, v) => setItems(prev => prev.map(it => it.catalogo_id === id ? { ...it, [k]: parseFloat(v) || 0 } : it));
+  const stockEditadoManualmente = useRef(false);
+  const setItem = (id, k, v) => {
+    if (k === "stock_actual") stockEditadoManualmente.current = true;
+    setItems(prev => prev.map(it => it.catalogo_id === id ? { ...it, [k]: parseFloat(v) || 0 } : it));
+  };
   const setManual = (i, k, v) => { const arr = [...itemsManuales]; arr[i] = { ...arr[i], [k]: v }; setItemsManuales(arr); };
   const setManualNum = (i, k, v) => { const arr = [...itemsManuales]; arr[i] = { ...arr[i], [k]: parseFloat(v) || 0 }; setItemsManuales(arr); };
+
+  // Al elegir el buque, si hay un registro de "stock vuelta a puerto" para ese buque,
+  // completamos el stock a bordo con lo cargado en ese registro (el más reciente).
+  // No pisamos ediciones manuales que el usuario ya haya hecho en esta carga.
+  const registroStockVuelta = cabecera.base_buque
+    ? stockVuelta.find(r => r.base_buque === cabecera.base_buque) || null
+    : null;
+  useEffect(() => {
+    if (pedidoInicial) return; // en edición de un pedido existente no tocamos lo ya cargado
+    if (!registroStockVuelta) return;
+    if (stockEditadoManualmente.current) return;
+    const stockPorCatalogo = {};
+    (registroStockVuelta.viveres_stock_vuelta_items || []).forEach(it => {
+      if (it.catalogo_id) stockPorCatalogo[it.catalogo_id] = it.stock;
+    });
+    setItems(prev => prev.map(it => stockPorCatalogo[it.catalogo_id] !== undefined ? { ...it, stock_actual: stockPorCatalogo[it.catalogo_id] } : it));
+    notify(`Stock a bordo completado con el registro de vuelta a puerto del ${fmtDate(registroStockVuelta.fecha)}`, "info");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [registroStockVuelta]);
 
   const paxDias = (cabecera.pax || 0) * (cabecera.dias || 0);
   const todosItems = [...items, ...itemsManuales];
@@ -622,6 +675,11 @@ function FormPedido({ pedidoInicial, catalogoInicial, parametros, solicitantes =
       </div>
       <FG label="Observaciones"><textarea value={cabecera.observaciones} onChange={e => setCab("observaciones", e.target.value)} placeholder="Notas adicionales..." /></FG>
       {cabecera.pax > 0 && cabecera.dias > 0 && <div className="info-box accent mt12" style={{ fontSize: 12 }}>Total: <strong>{cabecera.pax} PAX × {cabecera.dias} días = {paxDias} raciones</strong></div>}
+      {registroStockVuelta && (
+        <div className="info-box accent mt12" style={{ fontSize: 12 }}>
+          Hay un registro de <strong>stock a la vuelta a puerto</strong> del <strong>{fmtDate(registroStockVuelta.fecha)}</strong> para {cabecera.base_buque}. Se va a usar como stock a bordo inicial en el paso siguiente (podés editarlo ítem por ítem).
+        </div>
+      )}
       <div className="form-footer-actions mt16">
         <button className="btn btn-ghost" onClick={onCancel}>Cancelar</button>
         <button className="btn btn-primary" onClick={() => { if (!cabecera.base_buque || !cabecera.solicitado_por) { alert("Completá Base/Buque y Solicitado por"); return; } setStep(2); }}>Continuar → Cargar ítems</button>
@@ -779,14 +837,15 @@ function PageNuevo({ notify, onSaved, onCancel }) {
   const [catalogo, setCatalogo] = useState([]);
   const [parametros, setParametros] = useState([]);
   const [solicitantes, setSolicitantes] = useState([]);
+  const [stockVuelta, setStockVuelta] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
-    Promise.all([api.getCatalogo(), api.getParametros(), api.getSolicitantes()])
-      .then(([cat, par, sol]) => { setCatalogo(cat); setParametros(par); setSolicitantes(sol); setLoading(false); })
+    Promise.all([api.getCatalogo(), api.getParametros(), api.getSolicitantes(), api.getStockVuelta()])
+      .then(([cat, par, sol, sv]) => { setCatalogo(cat); setParametros(par); setSolicitantes(sol); setStockVuelta(sv); setLoading(false); })
       .catch(e => { notify("Error al cargar datos: " + e.message, "error"); setLoading(false); });
   }, [notify]);
   if (loading) return <div className="loading"><span className="spin">◌</span> Cargando catálogo...</div>;
-  return <FormPedido catalogoInicial={catalogo} parametros={parametros} solicitantes={solicitantes} onSave={async (cab, items) => { await api.crearPedido(cab, items); onSaved(); }} onCancel={onCancel} notify={notify} />;
+  return <FormPedido catalogoInicial={catalogo} parametros={parametros} solicitantes={solicitantes} stockVuelta={stockVuelta} onSave={async (cab, items) => { await api.crearPedido(cab, items); onSaved(); }} onCancel={onCancel} notify={notify} />;
 }
 
 //  MODAL: REVISAR PEDIDO 
@@ -1373,7 +1432,306 @@ function PageTracker({ notify }) {
   );
 }
 
-//  PAGE: INBOX 
+//  FORM: STOCK VUELTA A PUERTO
+function FormStockVuelta({ catalogoInicial, solicitantes = [], onSave, onCancel, notify }) {
+  const [catalogo] = useState(catalogoInicial || []);
+  const [saving, setSaving] = useState(false);
+  const [cabecera, setCabecera] = useState({
+    base_buque: "",
+    solicitado_por: "",
+    fecha: new Date().toISOString().split("T")[0],
+    observaciones: "",
+  });
+  const [items, setItems] = useState(() => catalogo.map(c => ({
+    catalogo_id: c.id,
+    descripcion: c.descripcion,
+    categoria: c.categoria,
+    temperatura: c.temperatura || "",
+    unidad_analisis: c.unidad_analisis || "Kg",
+    stock: "",
+  })));
+  const [filtroCateg, setFiltroCateg] = useState("");
+  const [busqueda, setBusqueda] = useState("");
+
+  const setCab = (k, v) => setCabecera(c => ({ ...c, [k]: v }));
+  const setStock = (id, v) => setItems(prev => prev.map(it => it.catalogo_id === id ? { ...it, stock: v } : it));
+
+  const categorias = [...new Set(catalogo.map(c => c.categoria))].sort();
+  const itemsFiltrados = items.filter(it => {
+    if (filtroCateg && it.categoria !== filtroCateg) return false;
+    if (busqueda && !it.descripcion.toLowerCase().includes(busqueda.toLowerCase())) return false;
+    return true;
+  });
+  const completados = items.filter(it => it.stock !== "" && it.stock != null).length;
+
+  const handleGuardar = async () => {
+    if (!cabecera.base_buque || !cabecera.solicitado_por || !cabecera.fecha) {
+      alert("Completá Base/Buque, Solicitante y Fecha");
+      return;
+    }
+    setSaving(true);
+    try {
+      const itemsAGuardar = items
+        .filter(it => it.stock !== "" && it.stock != null)
+        .map(it => ({
+          catalogo_id: it.catalogo_id,
+          descripcion: it.descripcion,
+          categoria: it.categoria,
+          unidad_analisis: it.unidad_analisis,
+          stock: parseFloat(it.stock) || 0,
+        }));
+      if (itemsAGuardar.length === 0) { alert("Cargá el stock de al menos un ítem"); setSaving(false); return; }
+      await onSave(cabecera, itemsAGuardar);
+    } catch (e) {
+      notify("Error: " + e.message, "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div>
+      <div className="card">
+        <div className="card-title">Datos de la vuelta a puerto</div>
+        <div className="form-grid-3">
+          <FG label="Base / Buque *">
+            <select value={cabecera.base_buque} onChange={e => setCab("base_buque", e.target.value)}>
+              <option value="">Seleccionar...</option>
+              {BASES.map(b => <option key={b}>{b}</option>)}
+            </select>
+          </FG>
+          <FG label="Solicitante *">
+            <select value={cabecera.solicitado_por} onChange={e => setCab("solicitado_por", e.target.value)}>
+              <option value="">Seleccionar...</option>
+              {solicitantes.map(s => <option key={s.id} value={s.nombre}>{s.nombre}</option>)}
+            </select>
+          </FG>
+          <FG label="Fecha *"><input type="date" value={cabecera.fecha} onChange={e => setCab("fecha", e.target.value)} /></FG>
+        </div>
+        <FG label="Observaciones"><textarea value={cabecera.observaciones} onChange={e => setCab("observaciones", e.target.value)} placeholder="Notas adicionales..." /></FG>
+      </div>
+
+      <div className="filter-row" style={{ marginBottom: 12 }}>
+        <input className="filter-input" placeholder=" Buscar ítem..." value={busqueda} onChange={e => setBusqueda(e.target.value)} />
+        <select className="filter-select" value={filtroCateg} onChange={e => setFiltroCateg(e.target.value)}>
+          <option value="">Todas las categorías</option>
+          {categorias.map(c => <option key={c}>{c}</option>)}
+        </select>
+        {(filtroCateg || busqueda) && <button className="btn btn-ghost btn-sm" onClick={() => { setFiltroCateg(""); setBusqueda(""); }}>✕</button>}
+        <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 11, color: "var(--muted)" }}>{completados} de {items.length} cargados</span>
+      </div>
+
+      <div className="card" style={{ padding: 0, overflow: "hidden", marginBottom: 16 }}>
+        <div className="table-wrap">
+          <table className="items-edit">
+            <thead>
+              <tr>
+                <th>Temp.</th>
+                <th>Categoría</th>
+                <th>Descripción</th>
+                <th>Unidad análisis</th>
+                <th style={{ width: 110 }}>Stock a bordo</th>
+              </tr>
+            </thead>
+            <tbody>
+              {itemsFiltrados.map(it => {
+                const cargado = it.stock !== "" && it.stock != null;
+                return (
+                  <tr key={it.catalogo_id} style={{ background: cargado ? "#F0FDF4" : "inherit" }}>
+                    <td><TempBadge temp={it.temperatura} /></td>
+                    <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.categoria}</td>
+                    <td style={{ fontSize: 12 }}>{it.descripcion}</td>
+                    <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.unidad_analisis}</td>
+                    <td>
+                      <input
+                        type="number"
+                        step="0.001"
+                        min="0"
+                        value={it.stock}
+                        placeholder="0"
+                        onChange={e => setStock(it.catalogo_id, e.target.value)}
+                        style={{
+                          width: 90, textAlign: "right",
+                          fontWeight: cargado ? 700 : 400,
+                          background: cargado ? "#DCFCE7" : "var(--surface)",
+                          border: `1px solid ${cargado ? "#86EFAC" : "var(--border2)"}`,
+                          borderRadius: "var(--r)", fontFamily: "var(--mono)", fontSize: 12,
+                          padding: "4px 8px", outline: "none",
+                        }}
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="form-footer-actions" style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+        <button className="btn btn-ghost" onClick={onCancel}>Cancelar</button>
+        <button className="btn btn-primary" onClick={handleGuardar} disabled={saving}>{saving ? "Guardando..." : "Guardar registro"}</button>
+      </div>
+    </div>
+  );
+}
+
+//  MODAL: DETALLE STOCK VUELTA A PUERTO
+function ModalStockVueltaDetalle({ registro, onClose }) {
+  const items = registro.viveres_stock_vuelta_items || [];
+  return (
+    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal modal-lg">
+        <div className="mhdr">
+          <div>
+            <div className="mtitle"> {registro.base_buque} — Stock a la vuelta a puerto</div>
+            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
+              {registro.solicitado_por} · {fmtDate(registro.fecha)}
+            </div>
+          </div>
+          <button className="mclose" onClick={onClose}>✕</button>
+        </div>
+        <div className="mbody">
+          {registro.observaciones && <div className="info-box accent mb12" style={{ fontSize: 12 }}>{registro.observaciones}</div>}
+          <div className="table-wrap">
+            <table className="items-edit">
+              <thead>
+                <tr><th>Categoría</th><th>Descripción</th><th>Unidad</th><th style={{ width: 90 }}>Stock</th></tr>
+              </thead>
+              <tbody>
+                {items.map(it => (
+                  <tr key={it.id}>
+                    <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.categoria}</td>
+                    <td style={{ fontSize: 12 }}>{it.descripcion}</td>
+                    <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.unidad_analisis}</td>
+                    <td className="text-mono" style={{ fontSize: 12, fontWeight: 600 }}>{fmt(it.stock)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div className="mftr"><button className="btn btn-ghost" onClick={onClose}>Cerrar</button></div>
+      </div>
+    </div>
+  );
+}
+
+//  PAGE: STOCK VUELTA A PUERTO
+function PageStockVuelta({ notify }) {
+  const [registros, setRegistros] = useState([]);
+  const [catalogo, setCatalogo] = useState([]);
+  const [solicitantes, setSolicitantes] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [mostrarForm, setMostrarForm] = useState(false);
+  const [detalle, setDetalle] = useState(null);
+  const [eliminando, setEliminando] = useState(null);
+  const [filtroBase, setFiltroBase] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [regs, cat, sol] = await Promise.all([api.getStockVuelta(), api.getCatalogo(), api.getSolicitantes()]);
+      setRegistros(regs); setCatalogo(cat); setSolicitantes(sol);
+    } catch (e) {
+      notify("Error al cargar datos: " + e.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  }, [notify]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleGuardar = async (cabecera, items) => {
+    await api.crearStockVuelta(cabecera, items);
+    notify("Stock a la vuelta a puerto guardado", "success");
+    setMostrarForm(false);
+    load();
+  };
+
+  const handleEliminar = async (r) => {
+    if (!window.confirm(`¿Eliminar el registro de ${r.base_buque} del ${fmtDate(r.fecha)}?`)) return;
+    setEliminando(r.id);
+    try {
+      await api.eliminarStockVuelta(r.id);
+      notify("Registro eliminado", "warn");
+      setRegistros(prev => prev.filter(x => x.id !== r.id));
+    } catch (e) {
+      notify("Error: " + e.message, "error");
+    } finally {
+      setEliminando(null);
+    }
+  };
+
+  const bases = [...new Set(registros.map(r => r.base_buque).filter(Boolean))].sort();
+  const filtrados = registros.filter(r => !filtroBase || r.base_buque === filtroBase);
+
+  if (mostrarForm) {
+    return (
+      <FormStockVuelta
+        catalogoInicial={catalogo}
+        solicitantes={solicitantes}
+        onSave={handleGuardar}
+        onCancel={() => setMostrarForm(false)}
+        notify={notify}
+      />
+    );
+  }
+
+  return (
+    <div>
+      <div className="filter-row mb12">
+        <select className="filter-select" value={filtroBase} onChange={e => setFiltroBase(e.target.value)}>
+          <option value="">Todos los barcos</option>
+          {bases.map(b => <option key={b}>{b}</option>)}
+        </select>
+        {filtroBase && <button className="btn btn-ghost btn-sm" onClick={() => setFiltroBase("")}>✕</button>}
+        <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 11, color: "var(--muted)" }}>{filtrados.length} de {registros.length}</span>
+        <button className="btn btn-primary btn-sm" onClick={() => setMostrarForm(true)}>+ Nuevo registro</button>
+      </div>
+
+      {loading ? <div className="loading"><span className="spin">◌</span></div> :
+        filtrados.length === 0 ? <div className="empty-state"><div style={{ fontSize: 28, marginBottom: 8 }}></div>Sin registros de stock a la vuelta a puerto</div> :
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Base/Barco</th>
+                  <th>Solicitante</th>
+                  <th>Fecha</th>
+                  <th>Ítems cargados</th>
+                  <th>Notas</th>
+                  <th style={{ width: 90, textAlign: "center" }}>Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtrados.map(r => (
+                  <tr key={r.id} className="click" onClick={() => setDetalle(r)}>
+                    <td style={{ fontWeight: 600, fontSize: 12 }}>{r.base_buque}</td>
+                    <td style={{ fontSize: 12 }}>{r.solicitado_por}</td>
+                    <td className="text-mono" style={{ fontSize: 11, color: "var(--muted)" }}>{fmtDate(r.fecha)}</td>
+                    <td className="text-mono" style={{ fontSize: 11, color: "var(--muted)" }}>{(r.viveres_stock_vuelta_items || []).length}</td>
+                    <td style={{ fontSize: 11, color: "var(--muted)", maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.observaciones || "—"}</td>
+                    <td style={{ textAlign: "center" }} onClick={e => e.stopPropagation()}>
+                      <button className="btn btn-danger btn-sm" onClick={() => handleEliminar(r)} disabled={eliminando === r.id} title="Eliminar registro">
+                        {eliminando === r.id ? "..." : "✕"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      }
+
+      {detalle && <ModalStockVueltaDetalle registro={detalle} onClose={() => setDetalle(null)} />}
+    </div>
+  );
+}
+
+//  PAGE: INBOX
 function PageInbox({ notify, onNeedRefresh }) {
   const [pedidos, setPedidos] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -2433,6 +2791,7 @@ function ViveresApp() {
     nuevo:     { grupo: "Pedidos",     titulo: "Nuevo pedido",         sub: "Cargá el pedido por embarcación. La dieta y la dotación definen las cantidades." },
     historial: { grupo: "Pedidos",     titulo: "Historial de pedidos", sub: "Todos los pedidos cargados, con su estado y su costo por cabeza y día." },
     tracker:   { grupo: "Seguimiento", titulo: "Seguimiento de entregas", sub: "Avance de cada pedido desde la compra hasta la recepción a bordo." },
+    stock_vuelta: { grupo: "Seguimiento", titulo: "Stock vuelta a puerto", sub: "Registrá el stock que queda a bordo cuando un buque vuelve a puerto, para completar el próximo pedido de ese buque." },
     catalogo:  { grupo: "Datos",       titulo: "Catálogo de víveres",  sub: "Artículos habilitados, con unidad, rubro y precio de referencia." },
     solicitantes: { grupo: "Datos",    titulo: "Solicitantes",         sub: "Nombres habilitados para crear pedidos. Estandarizá quién puede solicitar víveres." },
     pivot:     { grupo: "Datos",       titulo: "Análisis pivot",       sub: "Consumo y costo cruzados por embarcación, rubro y período." },
@@ -2448,6 +2807,7 @@ function ViveresApp() {
     ]},
     { titulo: "Seguimiento", items: [
       { id: "tracker", icon: "chart", label: "Seguimiento de entregas", count: 0 },
+      { id: "stock_vuelta", icon: "box", label: "Stock vuelta a puerto", count: 0 },
     ]},
     { titulo: "Datos", items: [
       { id: "catalogo",     icon: "box",   label: "Catálogo",       count: 0 },
@@ -2551,6 +2911,7 @@ function ViveresApp() {
             {page === "nuevo"     && <PageNuevo notify={notify} onSaved={() => { setPage("historial"); loadCounts(); }} onCancel={() => setPage("historial")} />}
             {page === "historial" && <PageHistorial onNuevo={() => setPage("nuevo")} notify={notify} />}
             {page === "tracker"   && <PageTracker notify={notify} />}
+            {page === "stock_vuelta" && <PageStockVuelta notify={notify} />}
             {page === "catalogo"  && <PageCatalogo notify={notify} />}
             {page === "solicitantes" && <PageSolicitantes notify={notify} />}
             {page === "pivot"     && <PagePivot />}
@@ -2566,6 +2927,7 @@ function ViveresApp() {
           { id: "nuevo",     label: "Nuevo",    icon: "cart",  count: 0 },
           { id: "historial", label: "Historial",icon: "list",  count: 0 },
           { id: "tracker",   label: "Entregas", icon: "chart", count: 0 },
+          { id: "stock_vuelta", label: "Stock", icon: "box", count: 0 },
           { id: "catalogo",  label: "Catálogo", icon: "box",   count: 0 },
         ].map(it => (
           <div

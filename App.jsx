@@ -840,9 +840,16 @@ function PageNuevo({ notify, onSaved, onCancel }) {
   const [stockVuelta, setStockVuelta] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
-    Promise.all([api.getCatalogo(), api.getParametros(), api.getSolicitantes(), api.getStockVuelta()])
-      .then(([cat, par, sol, sv]) => { setCatalogo(cat); setParametros(par); setSolicitantes(sol); setStockVuelta(sv); setLoading(false); })
-      .catch(e => { notify("Error al cargar datos: " + e.message, "error"); setLoading(false); });
+    // getStockVuelta() se carga aparte: si esa consulta falla (tablas nuevas de
+    // Supabase con algún problema, por ejemplo), no queremos que se caiga el
+    // catálogo ni los solicitantes, que son imprescindibles para armar el pedido.
+    Promise.all([api.getCatalogo(), api.getParametros(), api.getSolicitantes()])
+      .then(([cat, par, sol]) => { setCatalogo(cat); setParametros(par); setSolicitantes(sol); })
+      .catch(e => notify("Error al cargar datos: " + e.message, "error"))
+      .finally(() => setLoading(false));
+    api.getStockVuelta()
+      .then(sv => setStockVuelta(sv))
+      .catch(e => console.error("No se pudo cargar el historial de stock vuelta a puerto:", e.message));
   }, [notify]);
   if (loading) return <div className="loading"><span className="spin">◌</span> Cargando catálogo...</div>;
   return <FormPedido catalogoInicial={catalogo} parametros={parametros} solicitantes={solicitantes} stockVuelta={stockVuelta} onSave={async (cab, items) => { await api.crearPedido(cab, items); onSaved(); }} onCancel={onCancel} notify={notify} />;

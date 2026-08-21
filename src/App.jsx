@@ -36,7 +36,30 @@ const fmtDate = d => d ? new Date(d).toLocaleDateString("es-AR") : "—";
 // compra/entrega" hay que usar esta cantidad efectiva.
 const cantEfectiva = (it) => (it?.cantidad_autorizada != null ? it.cantidad_autorizada : (it?.cantidad_pedida || 0));
 
-//  API 
+// Calcula el stock actual por catalogo_id a partir de un registro de "stock
+// vuelta a puerto" (usa el stock verificado por Nicolás si existe, si no el
+// cargado originalmente por el solicitante) menos todo lo consumido en
+// "Movimiento stock en puerto" desde la fecha de ese registro en adelante.
+// Es la fuente única de verdad para el stock a bordo: la usan tanto Nuevo
+// Pedido (para prellenar el stock inicial) como Movimiento stock en puerto
+// (para mostrar cuánto queda antes de cargar el consumo del día).
+function stockActualPorCatalogo(registroVuelta, movimientos = []) {
+  const resultado = {};
+  if (!registroVuelta) return resultado;
+  (registroVuelta.viveres_stock_vuelta_items || []).forEach(it => {
+    if (!it.catalogo_id) return;
+    resultado[it.catalogo_id] = it.stock_verificado != null ? it.stock_verificado : (it.stock || 0);
+  });
+  movimientos
+    .filter(m => m.base_buque === registroVuelta.base_buque && new Date(m.fecha) >= new Date(registroVuelta.fecha))
+    .forEach(m => (m.viveres_movimiento_stock_items || []).forEach(it => {
+      if (!it.catalogo_id || resultado[it.catalogo_id] === undefined) return;
+      resultado[it.catalogo_id] = Math.max(0, resultado[it.catalogo_id] - (it.cantidad_consumida || 0));
+    }));
+  return resultado;
+}
+
+//  API
 const api = {
   async getCatalogo() {
     const { data, error } = await supabase.from("viveres_catalogo").select("*").eq("activo", true).order("categoria").order("descripcion");
@@ -621,7 +644,7 @@ function exportarParaProveedor(pedido, items) {
 }
 
 //  FORM PEDIDO 
-function FormPedido({ pedidoInicial, catalogoInicial, parametros, solicitantes = [], stockVuelta = [], onSave, onCancel, notify }) {
+function FormPedido({ pedidoInicial, catalogoInicial, parametros, solicitantes = [], stockVuelta = [], movimientosStock = [], onSave, onCancel, notify }) {
   const [step, setStep] = useState(1);
   const [catalogo] = useState(catalogoInicial || []);
   const [saving, setSaving] = useState(false);
@@ -668,14 +691,16 @@ function FormPedido({ pedidoInicial, catalogoInicial, parametros, solicitantes =
     if (pedidoInicial) return; // en edición de un pedido existente no tocamos lo ya cargado
     if (!registroStockVuelta) return;
     if (stockEditadoManualmente.current) return;
-    const stockPorCatalogo = {};
-    (registroStockVuelta.viveres_stock_vuelta_items || []).forEach(it => {
-      if (it.catalogo_id) stockPorCatalogo[it.catalogo_id] = it.stock;
-    });
+    // Punto de partida = stock de "vuelta a puerto" (verificado si Nicolás lo
+    // cargó) menos todo lo consumido a bordo desde esa fecha en "Movimiento
+    // stock en puerto". Así el pedido arranca con el stock real, no con la
+    // foto vieja del día que el buque volvió a puerto.
+    const stockPorCatalogo = stockActualPorCatalogo(registroStockVuelta, movimientosStock);
     setItems(prev => prev.map(it => stockPorCatalogo[it.catalogo_id] !== undefined ? { ...it, stock_actual: stockPorCatalogo[it.catalogo_id] } : it));
-    notify(`Stock a bordo completado con el registro de vuelta a puerto del ${fmtDate(registroStockVuelta.fecha)}`, "info");
+    const consumoRegistrado = movimientosStock.some(m => m.base_buque === registroStockVuelta.base_buque && new Date(m.fecha) >= new Date(registroStockVuelta.fecha));
+    notify(`Stock a bordo completado con el registro de vuelta a puerto del ${fmtDate(registroStockVuelta.fecha)}${consumoRegistrado ? " y el consumo diario registrado desde entonces" : ""}`, "info");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [registroStockVuelta]);
+  }, [registroStockVuelta, movimientosStock]);
 
   const paxDias = (cabecera.pax || 0) * (cabecera.dias || 0);
   const todosItems = [...items, ...itemsManuales];
@@ -718,7 +743,7 @@ function FormPedido({ pedidoInicial, catalogoInicial, parametros, solicitantes =
       {cabecera.pax > 0 && cabecera.dias > 0 && <div className="info-box accent mt12" style={{ fontSize: 12 }}>Total: <strong>{cabecera.pax} PAX × {cabecera.dias} días = {paxDias} raciones</strong></div>}
       {registroStockVuelta && (
         <div className="info-box accent mt12" style={{ fontSize: 12 }}>
-          Hay un registro de <strong>stock a la vuelta a puerto</strong> del <strong>{fmtDate(registroStockVuelta.fecha)}</strong> para {cabecera.base_buque}. Se va a usar como stock a bordo inicial en el paso siguiente (podés editarlo ítem por ítem).
+          Hay un registro de <strong>stock a la vuelta a puerto</strong> del <strong>{fmtDate(registroStockVuelta.fecha)}</strong> para {cabecera.base_buque}. Se va a usar como stock a bordo inicial en el paso siguiente, descontando el consumo diario cargado en <strong>Movimiento stock en puerto</strong> desde esa fecha (podés editarlo ítem por ítem).
         </div>
       )}
       <div className="form-footer-actions mt16">
@@ -879,11 +904,13 @@ function PageNuevo({ notify, onSaved, onCancel }) {
   const [parametros, setParametros] = useState([]);
   const [solicitantes, setSolicitantes] = useState([]);
   const [stockVuelta, setStockVuelta] = useState([]);
+  const [movimientosStock, setMovimientosStock] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
-    // getStockVuelta() se carga aparte: si esa consulta falla (tablas nuevas de
-    // Supabase con algún problema, por ejemplo), no queremos que se caiga el
-    // catálogo ni los solicitantes, que son imprescindibles para armar el pedido.
+    // getStockVuelta() y getMovimientosStock() se cargan aparte: si esas
+    // consultas fallan (tablas nuevas de Supabase con algún problema, por
+    // ejemplo), no queremos que se caiga el catálogo ni los solicitantes,
+    // que son imprescindibles para armar el pedido.
     Promise.all([api.getCatalogo(), api.getParametros(), api.getSolicitantes()])
       .then(([cat, par, sol]) => { setCatalogo(cat); setParametros(par); setSolicitantes(sol); })
       .catch(e => notify("Error al cargar datos: " + e.message, "error"))
@@ -891,9 +918,12 @@ function PageNuevo({ notify, onSaved, onCancel }) {
     api.getStockVuelta()
       .then(sv => setStockVuelta(sv))
       .catch(e => console.error("No se pudo cargar el historial de stock vuelta a puerto:", e.message));
+    api.getMovimientosStock()
+      .then(mv => setMovimientosStock(mv))
+      .catch(e => console.error("No se pudo cargar el historial de movimiento de stock en puerto:", e.message));
   }, [notify]);
   if (loading) return <div className="loading"><span className="spin">◌</span> Cargando catálogo...</div>;
-  return <FormPedido catalogoInicial={catalogo} parametros={parametros} solicitantes={solicitantes} stockVuelta={stockVuelta} onSave={async (cab, items) => { await api.crearPedido(cab, items); onSaved(); }} onCancel={onCancel} notify={notify} />;
+  return <FormPedido catalogoInicial={catalogo} parametros={parametros} solicitantes={solicitantes} stockVuelta={stockVuelta} movimientosStock={movimientosStock} onSave={async (cab, items) => { await api.crearPedido(cab, items); onSaved(); }} onCancel={onCancel} notify={notify} />;
 }
 
 //  MODAL: REVISAR PEDIDO 
@@ -1871,7 +1901,7 @@ function PageStockVuelta({ notify, userEmail }) {
 // puerto" del barco (usa el stock verificado si Nicolás lo cargó, si no el
 // stock original) menos todo lo consumido desde esa fecha, y resta lo que
 // se cargue hoy.
-function FormMovimientoStock({ base, baseline, consumidoPrevio, solicitantes = [], onSave, onCancel, notify }) {
+function FormMovimientoStock({ base, baseline, movimientosStock = [], solicitantes = [], onSave, onCancel, notify }) {
   const [saving, setSaving] = useState(false);
   const [cabecera, setCabecera] = useState({
     base_buque: base,
@@ -1880,18 +1910,15 @@ function FormMovimientoStock({ base, baseline, consumidoPrevio, solicitantes = [
     observaciones: "",
   });
   const stockBase = baseline?.viveres_stock_vuelta_items || [];
-  const [items, setItems] = useState(() => stockBase.map(it => {
-    const previo = consumidoPrevio[it.catalogo_id] || 0;
-    const partida = it.stock_verificado != null ? it.stock_verificado : it.stock;
-    return {
-      catalogo_id: it.catalogo_id,
-      descripcion: it.descripcion,
-      categoria: it.categoria,
-      unidad: it.unidad_analisis,
-      stockActual: Math.max(0, (partida || 0) - previo),
-      consumido: "",
-    };
-  }));
+  const stockActualDict = useMemo(() => stockActualPorCatalogo(baseline, movimientosStock), [baseline, movimientosStock]);
+  const [items, setItems] = useState(() => stockBase.map(it => ({
+    catalogo_id: it.catalogo_id,
+    descripcion: it.descripcion,
+    categoria: it.categoria,
+    unidad: it.unidad_analisis,
+    stockActual: stockActualDict[it.catalogo_id] ?? 0,
+    consumido: "",
+  })));
   const [filtroCateg, setFiltroCateg] = useState("");
   const [busqueda, setBusqueda] = useState("");
 
@@ -1907,8 +1934,8 @@ function FormMovimientoStock({ base, baseline, consumidoPrevio, solicitantes = [
   const cargados = items.filter(it => it.consumido !== "" && it.consumido != null && parseFloat(it.consumido) > 0).length;
 
   const handleGuardar = async () => {
-    if (!cabecera.registrado_por || !cabecera.fecha) {
-      alert("Completá Solicitante y Fecha");
+    if (!cabecera.registrado_por.trim() || !cabecera.fecha) {
+      alert("Completá quién registra el consumo y la fecha");
       return;
     }
     setSaving(true);
@@ -1937,11 +1964,16 @@ function FormMovimientoStock({ base, baseline, consumidoPrevio, solicitantes = [
         <div className="card-title">Consumo de hoy — {base}</div>
         <div className="form-grid-3">
           <FG label="Base / Buque"><input value={cabecera.base_buque} disabled /></FG>
-          <FG label="Registrado por *">
-            <select value={cabecera.registrado_por} onChange={e => setCab("registrado_por", e.target.value)}>
-              <option value="">Seleccionar...</option>
-              {solicitantes.map(s => <option key={s.id} value={s.nombre}>{s.nombre}</option>)}
-            </select>
+          <FG label="Registrado por *" hint="Cualquier persona a bordo, no hace falta que sea el cocinero">
+            <input
+              value={cabecera.registrado_por}
+              onChange={e => setCab("registrado_por", e.target.value)}
+              placeholder="Nombre de quien carga el consumo"
+              list="nombres-a-bordo"
+            />
+            <datalist id="nombres-a-bordo">
+              {solicitantes.map(s => <option key={s.id} value={s.nombre} />)}
+            </datalist>
           </FG>
           <FG label="Fecha *"><input type="date" value={cabecera.fecha} onChange={e => setCab("fecha", e.target.value)} /></FG>
         </div>
@@ -2086,19 +2118,6 @@ function PageMovimientoStock({ notify, userEmail }) {
     ? stockVuelta.filter(r => r.base_buque === baseElegida).sort((a, b) => new Date(b.fecha) - new Date(a.fecha))[0]
     : null;
 
-  // Consumo ya registrado desde ese registro de vuelta a puerto (para no
-  // arrastrar consumo de un ciclo anterior si se cargó un nuevo registro).
-  const consumidoPrevio = useMemo(() => {
-    if (!baseline) return {};
-    const acc = {};
-    movimientos
-      .filter(m => m.base_buque === baseElegida && new Date(m.fecha) >= new Date(baseline.fecha))
-      .forEach(m => (m.viveres_movimiento_stock_items || []).forEach(it => {
-        acc[it.catalogo_id] = (acc[it.catalogo_id] || 0) + (it.cantidad_consumida || 0);
-      }));
-    return acc;
-  }, [movimientos, baseElegida, baseline]);
-
   const handleGuardar = async (cabecera, items) => {
     await api.crearMovimientoStock(cabecera, items);
     notify("Consumo del día guardado", "success");
@@ -2127,7 +2146,7 @@ function PageMovimientoStock({ notify, userEmail }) {
       <FormMovimientoStock
         base={baseElegida}
         baseline={baseline}
-        consumidoPrevio={consumidoPrevio}
+        movimientosStock={movimientos}
         solicitantes={solicitantes}
         onSave={handleGuardar}
         onCancel={() => setMostrarForm(false)}

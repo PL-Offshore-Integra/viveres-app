@@ -167,7 +167,48 @@ const api = {
     const { error } = await supabase.from("viveres_stock_vuelta").delete().eq("id", id);
     if (error) throw error;
   },
+  // Solo nthompson@ploffshore.com puede ejecutar esto: el chequeo real está
+  // del lado del servidor, en la función set_stock_verificado (ver SQL).
+  async actualizarStockVerificado(itemId, valor) {
+    const { error } = await supabase.rpc("set_stock_verificado", {
+      p_item_id: itemId,
+      p_valor: valor === "" || valor == null ? null : parseFloat(valor),
+    });
+    if (error) throw error;
+  },
+  async getMovimientosStock() {
+    const { data, error } = await supabase
+      .from("viveres_movimiento_stock")
+      .select("*, viveres_movimiento_stock_items(*)")
+      .order("fecha", { ascending: false })
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    return data || [];
+  },
+  async crearMovimientoStock(cabecera, items) {
+    const { data: nuevo, error } = await supabase
+      .from("viveres_movimiento_stock")
+      .insert([{ ...cabecera }])
+      .select()
+      .single();
+    if (error) throw error;
+    if (items?.length) {
+      const { error: errItems } = await supabase
+        .from("viveres_movimiento_stock_items")
+        .insert(items.map(it => ({ ...it, movimiento_id: nuevo.id })));
+      if (errItems) throw errItems;
+    }
+    return nuevo;
+  },
+  async eliminarMovimientoStock(id) {
+    const { error: errItems } = await supabase.from("viveres_movimiento_stock_items").delete().eq("movimiento_id", id);
+    if (errItems) throw errItems;
+    const { error } = await supabase.from("viveres_movimiento_stock").delete().eq("id", id);
+    if (error) throw error;
+  },
 };
+
+const NICOLAS_EMAIL = "nthompson@ploffshore.com";
 
 //  CSS 
 const CSS = `
@@ -840,9 +881,16 @@ function PageNuevo({ notify, onSaved, onCancel }) {
   const [stockVuelta, setStockVuelta] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
-    Promise.all([api.getCatalogo(), api.getParametros(), api.getSolicitantes(), api.getStockVuelta()])
-      .then(([cat, par, sol, sv]) => { setCatalogo(cat); setParametros(par); setSolicitantes(sol); setStockVuelta(sv); setLoading(false); })
-      .catch(e => { notify("Error al cargar datos: " + e.message, "error"); setLoading(false); });
+    // getStockVuelta() se carga aparte: si esa consulta falla (tablas nuevas de
+    // Supabase con algún problema, por ejemplo), no queremos que se caiga el
+    // catálogo ni los solicitantes, que son imprescindibles para armar el pedido.
+    Promise.all([api.getCatalogo(), api.getParametros(), api.getSolicitantes()])
+      .then(([cat, par, sol]) => { setCatalogo(cat); setParametros(par); setSolicitantes(sol); })
+      .catch(e => notify("Error al cargar datos: " + e.message, "error"))
+      .finally(() => setLoading(false));
+    api.getStockVuelta()
+      .then(sv => setStockVuelta(sv))
+      .catch(e => console.error("No se pudo cargar el historial de stock vuelta a puerto:", e.message));
   }, [notify]);
   if (loading) return <div className="loading"><span className="spin">◌</span> Cargando catálogo...</div>;
   return <FormPedido catalogoInicial={catalogo} parametros={parametros} solicitantes={solicitantes} stockVuelta={stockVuelta} onSave={async (cab, items) => { await api.crearPedido(cab, items); onSaved(); }} onCancel={onCancel} notify={notify} />;
@@ -1447,7 +1495,7 @@ function FormStockVuelta({ catalogoInicial, solicitantes = [], onSave, onCancel,
     descripcion: c.descripcion,
     categoria: c.categoria,
     temperatura: c.temperatura || "",
-    unidad_analisis: c.unidad_analisis || "Kg",
+    unidad: c.unidad || "Unidad",
     stock: "",
   })));
   const [filtroCateg, setFiltroCateg] = useState("");
@@ -1477,7 +1525,7 @@ function FormStockVuelta({ catalogoInicial, solicitantes = [], onSave, onCancel,
           catalogo_id: it.catalogo_id,
           descripcion: it.descripcion,
           categoria: it.categoria,
-          unidad_analisis: it.unidad_analisis,
+          unidad_analisis: it.unidad, // guardamos la unidad de pedido (Unidad, Kg, Botella, etc.), no la de análisis
           stock: parseFloat(it.stock) || 0,
         }));
       if (itemsAGuardar.length === 0) { alert("Cargá el stock de al menos un ítem"); setSaving(false); return; }
@@ -1529,7 +1577,7 @@ function FormStockVuelta({ catalogoInicial, solicitantes = [], onSave, onCancel,
                 <th>Temp.</th>
                 <th>Categoría</th>
                 <th>Descripción</th>
-                <th>Unidad análisis</th>
+                <th>Unidad</th>
                 <th style={{ width: 110 }}>Stock a bordo</th>
               </tr>
             </thead>
@@ -1541,11 +1589,11 @@ function FormStockVuelta({ catalogoInicial, solicitantes = [], onSave, onCancel,
                     <td><TempBadge temp={it.temperatura} /></td>
                     <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.categoria}</td>
                     <td style={{ fontSize: 12 }}>{it.descripcion}</td>
-                    <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.unidad_analisis}</td>
+                    <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.unidad}</td>
                     <td>
                       <input
                         type="number"
-                        step="0.001"
+                        step="1"
                         min="0"
                         value={it.stock}
                         placeholder="0"
@@ -1577,8 +1625,29 @@ function FormStockVuelta({ catalogoInicial, solicitantes = [], onSave, onCancel,
 }
 
 //  MODAL: DETALLE STOCK VUELTA A PUERTO
-function ModalStockVueltaDetalle({ registro, onClose }) {
-  const items = registro.viveres_stock_vuelta_items || [];
+function ModalStockVueltaDetalle({ registro, onClose, userEmail, notify }) {
+  const [items, setItems] = useState(registro.viveres_stock_vuelta_items || []);
+  const [editando, setEditando] = useState({}); // { [itemId]: valor en edición }
+  const [guardando, setGuardando] = useState(null); // itemId que se está guardando
+  const puedeVerificar = userEmail === NICOLAS_EMAIL;
+
+  const guardarVerificado = async (itemId) => {
+    const valor = editando[itemId];
+    setGuardando(itemId);
+    try {
+      await api.actualizarStockVerificado(itemId, valor);
+      setItems(prev => prev.map(it => it.id === itemId
+        ? { ...it, stock_verificado: valor === "" ? null : parseFloat(valor), verificado_por: userEmail, verificado_at: new Date().toISOString() }
+        : it));
+      setEditando(prev => { const { [itemId]: _, ...resto } = prev; return resto; });
+      notify?.("Stock verificado guardado", "success");
+    } catch (e) {
+      notify?.("Error al guardar: " + e.message, "error");
+    } finally {
+      setGuardando(null);
+    }
+  };
+
   return (
     <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal modal-lg">
@@ -1593,20 +1662,64 @@ function ModalStockVueltaDetalle({ registro, onClose }) {
         </div>
         <div className="mbody">
           {registro.observaciones && <div className="info-box accent mb12" style={{ fontSize: 12 }}>{registro.observaciones}</div>}
+          {puedeVerificar && (
+            <div className="info-box mb12" style={{ fontSize: 12 }}>
+              Podés cargar el stock verificado tras una revisión. Se guarda aparte, sin pisar el valor original.
+            </div>
+          )}
           <div className="table-wrap">
             <table className="items-edit">
               <thead>
-                <tr><th>Categoría</th><th>Descripción</th><th>Unidad</th><th style={{ width: 90 }}>Stock</th></tr>
+                <tr>
+                  <th>Categoría</th><th>Descripción</th><th>Unidad</th>
+                  <th style={{ width: 90 }}>Stock</th>
+                  <th style={{ width: 140 }}>Stock verificado</th>
+                </tr>
               </thead>
               <tbody>
-                {items.map(it => (
-                  <tr key={it.id}>
-                    <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.categoria}</td>
-                    <td style={{ fontSize: 12 }}>{it.descripcion}</td>
-                    <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.unidad_analisis}</td>
-                    <td className="text-mono" style={{ fontSize: 12, fontWeight: 600 }}>{fmt(it.stock)}</td>
-                  </tr>
-                ))}
+                {items.map(it => {
+                  const enEdicion = Object.prototype.hasOwnProperty.call(editando, it.id);
+                  return (
+                    <tr key={it.id}>
+                      <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.categoria}</td>
+                      <td style={{ fontSize: 12 }}>{it.descripcion}</td>
+                      <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.unidad_analisis}</td>
+                      <td className="text-mono" style={{ fontSize: 12, fontWeight: 600 }}>{fmt(it.stock)}</td>
+                      <td>
+                        {puedeVerificar ? (
+                          <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                            <input
+                              type="number" step="1" min="0"
+                              value={enEdicion ? editando[it.id] : (it.stock_verificado ?? "")}
+                              placeholder="—"
+                              onChange={e => setEditando(prev => ({ ...prev, [it.id]: e.target.value }))}
+                              style={{ width: 70, textAlign: "right", fontFamily: "var(--mono)", fontSize: 12, padding: "4px 6px" }}
+                            />
+                            {enEdicion && (
+                              <button
+                                className="btn btn-primary btn-sm"
+                                style={{ padding: "2px 8px" }}
+                                disabled={guardando === it.id}
+                                onClick={() => guardarVerificado(it.id)}
+                              >
+                                {guardando === it.id ? "..." : "OK"}
+                              </button>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-mono" style={{ fontSize: 12, fontWeight: it.stock_verificado != null ? 600 : 400, color: it.stock_verificado != null ? "var(--accent2)" : "var(--muted2)" }}>
+                            {it.stock_verificado != null ? fmt(it.stock_verificado) : "—"}
+                          </span>
+                        )}
+                        {it.verificado_por && !enEdicion && (
+                          <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>
+                            {it.verificado_por.replace(/@.*/, "")} · {fmtDate(it.verificado_at)}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1618,7 +1731,7 @@ function ModalStockVueltaDetalle({ registro, onClose }) {
 }
 
 //  PAGE: STOCK VUELTA A PUERTO
-function PageStockVuelta({ notify }) {
+function PageStockVuelta({ notify, userEmail }) {
   const [registros, setRegistros] = useState([]);
   const [catalogo, setCatalogo] = useState([]);
   const [solicitantes, setSolicitantes] = useState([]);
@@ -1630,11 +1743,20 @@ function PageStockVuelta({ notify }) {
 
   const load = useCallback(async () => {
     setLoading(true);
+    // Cargamos catálogo/solicitantes por separado del historial: si el historial
+    // falla (por ejemplo, porque todavía no se crearon las tablas en Supabase),
+    // igual queremos que el catálogo completo esté disponible para el registro nuevo.
     try {
-      const [regs, cat, sol] = await Promise.all([api.getStockVuelta(), api.getCatalogo(), api.getSolicitantes()]);
-      setRegistros(regs); setCatalogo(cat); setSolicitantes(sol);
+      const [cat, sol] = await Promise.all([api.getCatalogo(), api.getSolicitantes()]);
+      setCatalogo(cat); setSolicitantes(sol);
     } catch (e) {
-      notify("Error al cargar datos: " + e.message, "error");
+      notify("Error al cargar el catálogo: " + e.message, "error");
+    }
+    try {
+      const regs = await api.getStockVuelta();
+      setRegistros(regs);
+    } catch (e) {
+      notify("Error al cargar el historial de stock vuelta a puerto: " + e.message, "error");
     } finally {
       setLoading(false);
     }
@@ -1687,8 +1809,21 @@ function PageStockVuelta({ notify }) {
         </select>
         {filtroBase && <button className="btn btn-ghost btn-sm" onClick={() => setFiltroBase("")}>✕</button>}
         <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 11, color: "var(--muted)" }}>{filtrados.length} de {registros.length}</span>
-        <button className="btn btn-primary btn-sm" onClick={() => setMostrarForm(true)}>+ Nuevo registro</button>
+        <button
+          className="btn btn-primary btn-sm"
+          onClick={() => setMostrarForm(true)}
+          disabled={loading || catalogo.length === 0}
+          title={!loading && catalogo.length === 0 ? "No hay ítems en el catálogo. Cargalos primero en la sección Catálogo." : undefined}
+        >
+          + Nuevo registro
+        </button>
       </div>
+
+      {!loading && catalogo.length === 0 && (
+        <div className="info-box warn mb12" style={{ fontSize: 12 }}>
+          El catálogo está vacío: no hay ítems para cargar stock. Agregá productos en la sección <strong>Catálogo</strong> primero.
+        </div>
+      )}
 
       {loading ? <div className="loading"><span className="spin">◌</span></div> :
         filtrados.length === 0 ? <div className="empty-state"><div style={{ fontSize: 28, marginBottom: 8 }}></div>Sin registros de stock a la vuelta a puerto</div> :
@@ -1726,7 +1861,342 @@ function PageStockVuelta({ notify }) {
         </div>
       }
 
-      {detalle && <ModalStockVueltaDetalle registro={detalle} onClose={() => setDetalle(null)} />}
+      {detalle && <ModalStockVueltaDetalle registro={detalle} onClose={() => setDetalle(null)} userEmail={userEmail} notify={notify} />}
+    </div>
+  );
+}
+
+//  FORM: MOVIMIENTO STOCK EN PUERTO
+// Carga diaria de consumo a bordo. Parte del último registro de "Vuelta a
+// puerto" del barco (usa el stock verificado si Nicolás lo cargó, si no el
+// stock original) menos todo lo consumido desde esa fecha, y resta lo que
+// se cargue hoy.
+function FormMovimientoStock({ base, baseline, consumidoPrevio, solicitantes = [], onSave, onCancel, notify }) {
+  const [saving, setSaving] = useState(false);
+  const [cabecera, setCabecera] = useState({
+    base_buque: base,
+    registrado_por: "",
+    fecha: new Date().toISOString().split("T")[0],
+    observaciones: "",
+  });
+  const stockBase = baseline?.viveres_stock_vuelta_items || [];
+  const [items, setItems] = useState(() => stockBase.map(it => {
+    const previo = consumidoPrevio[it.catalogo_id] || 0;
+    const partida = it.stock_verificado != null ? it.stock_verificado : it.stock;
+    return {
+      catalogo_id: it.catalogo_id,
+      descripcion: it.descripcion,
+      categoria: it.categoria,
+      unidad: it.unidad_analisis,
+      stockActual: Math.max(0, (partida || 0) - previo),
+      consumido: "",
+    };
+  }));
+  const [filtroCateg, setFiltroCateg] = useState("");
+  const [busqueda, setBusqueda] = useState("");
+
+  const setCab = (k, v) => setCabecera(c => ({ ...c, [k]: v }));
+  const setConsumido = (id, v) => setItems(prev => prev.map(it => it.catalogo_id === id ? { ...it, consumido: v } : it));
+
+  const categorias = [...new Set(items.map(it => it.categoria))].sort();
+  const itemsFiltrados = items.filter(it => {
+    if (filtroCateg && it.categoria !== filtroCateg) return false;
+    if (busqueda && !it.descripcion.toLowerCase().includes(busqueda.toLowerCase())) return false;
+    return true;
+  });
+  const cargados = items.filter(it => it.consumido !== "" && it.consumido != null && parseFloat(it.consumido) > 0).length;
+
+  const handleGuardar = async () => {
+    if (!cabecera.registrado_por || !cabecera.fecha) {
+      alert("Completá Solicitante y Fecha");
+      return;
+    }
+    setSaving(true);
+    try {
+      const itemsAGuardar = items
+        .filter(it => it.consumido !== "" && it.consumido != null && parseFloat(it.consumido) > 0)
+        .map(it => ({
+          catalogo_id: it.catalogo_id,
+          descripcion: it.descripcion,
+          categoria: it.categoria,
+          unidad_analisis: it.unidad,
+          cantidad_consumida: parseFloat(it.consumido) || 0,
+        }));
+      if (itemsAGuardar.length === 0) { alert("Cargá el consumo de al menos un ítem"); setSaving(false); return; }
+      await onSave(cabecera, itemsAGuardar);
+    } catch (e) {
+      notify("Error: " + e.message, "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div>
+      <div className="card">
+        <div className="card-title">Consumo de hoy — {base}</div>
+        <div className="form-grid-3">
+          <FG label="Base / Buque"><input value={cabecera.base_buque} disabled /></FG>
+          <FG label="Registrado por *">
+            <select value={cabecera.registrado_por} onChange={e => setCab("registrado_por", e.target.value)}>
+              <option value="">Seleccionar...</option>
+              {solicitantes.map(s => <option key={s.id} value={s.nombre}>{s.nombre}</option>)}
+            </select>
+          </FG>
+          <FG label="Fecha *"><input type="date" value={cabecera.fecha} onChange={e => setCab("fecha", e.target.value)} /></FG>
+        </div>
+        <FG label="Observaciones"><textarea value={cabecera.observaciones} onChange={e => setCab("observaciones", e.target.value)} placeholder="Notas adicionales..." /></FG>
+      </div>
+
+      <div className="filter-row" style={{ marginBottom: 12 }}>
+        <input className="filter-input" placeholder=" Buscar ítem..." value={busqueda} onChange={e => setBusqueda(e.target.value)} />
+        <select className="filter-select" value={filtroCateg} onChange={e => setFiltroCateg(e.target.value)}>
+          <option value="">Todas las categorías</option>
+          {categorias.map(c => <option key={c}>{c}</option>)}
+        </select>
+        {(filtroCateg || busqueda) && <button className="btn btn-ghost btn-sm" onClick={() => { setFiltroCateg(""); setBusqueda(""); }}>✕</button>}
+        <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 11, color: "var(--muted)" }}>{cargados} ítems con consumo cargado</span>
+      </div>
+
+      <div className="card" style={{ padding: 0, overflow: "hidden", marginBottom: 16 }}>
+        <div className="table-wrap">
+          <table className="items-edit">
+            <thead>
+              <tr>
+                <th>Categoría</th>
+                <th>Descripción</th>
+                <th>Unidad</th>
+                <th style={{ width: 100 }}>Stock actual</th>
+                <th style={{ width: 110 }}>Consumido hoy</th>
+              </tr>
+            </thead>
+            <tbody>
+              {itemsFiltrados.map(it => {
+                const cargado = it.consumido !== "" && it.consumido != null && parseFloat(it.consumido) > 0;
+                return (
+                  <tr key={it.catalogo_id} style={{ background: cargado ? "#FEF2F2" : "inherit" }}>
+                    <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.categoria}</td>
+                    <td style={{ fontSize: 12 }}>{it.descripcion}</td>
+                    <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.unidad}</td>
+                    <td className="text-mono" style={{ fontSize: 12, fontWeight: 600 }}>{fmt(it.stockActual)}</td>
+                    <td>
+                      <input
+                        type="number"
+                        step="1"
+                        min="0"
+                        max={it.stockActual}
+                        value={it.consumido}
+                        placeholder="0"
+                        onChange={e => setConsumido(it.catalogo_id, e.target.value)}
+                        style={{
+                          width: 90, textAlign: "right",
+                          fontWeight: cargado ? 700 : 400,
+                          background: cargado ? "#FEE2E2" : "var(--surface)",
+                          border: `1px solid ${cargado ? "#FCA5A5" : "var(--border2)"}`,
+                          borderRadius: "var(--r)", fontFamily: "var(--mono)", fontSize: 12,
+                          padding: "4px 8px", outline: "none",
+                        }}
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="form-footer-actions" style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+        <button className="btn btn-ghost" onClick={onCancel}>Cancelar</button>
+        <button className="btn btn-primary" onClick={handleGuardar} disabled={saving}>{saving ? "Guardando..." : "Guardar consumo del día"}</button>
+      </div>
+    </div>
+  );
+}
+
+//  MODAL: DETALLE MOVIMIENTO STOCK
+function ModalMovimientoDetalle({ registro, onClose }) {
+  const items = registro.viveres_movimiento_stock_items || [];
+  return (
+    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal modal-lg">
+        <div className="mhdr">
+          <div>
+            <div className="mtitle"> {registro.base_buque} — Consumo del día</div>
+            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
+              {registro.registrado_por} · {fmtDate(registro.fecha)}
+            </div>
+          </div>
+          <button className="mclose" onClick={onClose}>✕</button>
+        </div>
+        <div className="mbody">
+          {registro.observaciones && <div className="info-box accent mb12" style={{ fontSize: 12 }}>{registro.observaciones}</div>}
+          <div className="table-wrap">
+            <table className="items-edit">
+              <thead>
+                <tr><th>Categoría</th><th>Descripción</th><th>Unidad</th><th style={{ width: 90 }}>Consumido</th></tr>
+              </thead>
+              <tbody>
+                {items.map(it => (
+                  <tr key={it.id}>
+                    <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.categoria}</td>
+                    <td style={{ fontSize: 12 }}>{it.descripcion}</td>
+                    <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.unidad_analisis}</td>
+                    <td className="text-mono" style={{ fontSize: 12, fontWeight: 600 }}>{fmt(it.cantidad_consumida)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div className="mftr"><button className="btn btn-ghost" onClick={onClose}>Cerrar</button></div>
+      </div>
+    </div>
+  );
+}
+
+//  PAGE: MOVIMIENTO STOCK EN PUERTO
+function PageMovimientoStock({ notify, userEmail }) {
+  const [stockVuelta, setStockVuelta] = useState([]);
+  const [movimientos, setMovimientos] = useState([]);
+  const [solicitantes, setSolicitantes] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [baseElegida, setBaseElegida] = useState("");
+  const [mostrarForm, setMostrarForm] = useState(false);
+  const [detalle, setDetalle] = useState(null);
+  const [eliminando, setEliminando] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [sv, mv, sol] = await Promise.all([api.getStockVuelta(), api.getMovimientosStock(), api.getSolicitantes()]);
+      setStockVuelta(sv); setMovimientos(mv); setSolicitantes(sol);
+    } catch (e) {
+      notify("Error al cargar el stock en puerto: " + e.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  }, [notify]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Último registro de "vuelta a puerto" para el barco elegido: es el punto
+  // de partida sobre el que se resta el consumo diario.
+  const baseline = baseElegida
+    ? stockVuelta.filter(r => r.base_buque === baseElegida).sort((a, b) => new Date(b.fecha) - new Date(a.fecha))[0]
+    : null;
+
+  // Consumo ya registrado desde ese registro de vuelta a puerto (para no
+  // arrastrar consumo de un ciclo anterior si se cargó un nuevo registro).
+  const consumidoPrevio = useMemo(() => {
+    if (!baseline) return {};
+    const acc = {};
+    movimientos
+      .filter(m => m.base_buque === baseElegida && new Date(m.fecha) >= new Date(baseline.fecha))
+      .forEach(m => (m.viveres_movimiento_stock_items || []).forEach(it => {
+        acc[it.catalogo_id] = (acc[it.catalogo_id] || 0) + (it.cantidad_consumida || 0);
+      }));
+    return acc;
+  }, [movimientos, baseElegida, baseline]);
+
+  const handleGuardar = async (cabecera, items) => {
+    await api.crearMovimientoStock(cabecera, items);
+    notify("Consumo del día guardado", "success");
+    setMostrarForm(false);
+    load();
+  };
+
+  const handleEliminar = async (r) => {
+    if (!window.confirm(`¿Eliminar el registro de consumo de ${r.base_buque} del ${fmtDate(r.fecha)}?`)) return;
+    setEliminando(r.id);
+    try {
+      await api.eliminarMovimientoStock(r.id);
+      notify("Registro eliminado", "warn");
+      setMovimientos(prev => prev.filter(x => x.id !== r.id));
+    } catch (e) {
+      notify("Error: " + e.message, "error");
+    } finally {
+      setEliminando(null);
+    }
+  };
+
+  const movimientosFiltrados = movimientos.filter(m => !baseElegida || m.base_buque === baseElegida);
+
+  if (mostrarForm) {
+    return (
+      <FormMovimientoStock
+        base={baseElegida}
+        baseline={baseline}
+        consumidoPrevio={consumidoPrevio}
+        solicitantes={solicitantes}
+        onSave={handleGuardar}
+        onCancel={() => setMostrarForm(false)}
+        notify={notify}
+      />
+    );
+  }
+
+  return (
+    <div>
+      <div className="filter-row mb12">
+        <select className="filter-select" value={baseElegida} onChange={e => setBaseElegida(e.target.value)}>
+          <option value="">Elegí un barco...</option>
+          {BASES.map(b => <option key={b}>{b}</option>)}
+        </select>
+        <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 11, color: "var(--muted)" }}>{movimientosFiltrados.length} registros</span>
+        <button
+          className="btn btn-primary btn-sm"
+          onClick={() => setMostrarForm(true)}
+          disabled={loading || !baseElegida || !baseline}
+          title={!baseElegida ? "Elegí un barco primero" : (!baseline ? "No hay un registro de Vuelta a Puerto para este barco" : undefined)}
+        >
+          + Cargar consumo de hoy
+        </button>
+      </div>
+
+      {baseElegida && !loading && !baseline && (
+        <div className="info-box warn mb12" style={{ fontSize: 12 }}>
+          No hay ningún registro de <strong>Stock vuelta a puerto</strong> para {baseElegida}. Cargá uno primero en esa sección para tener un punto de partida.
+        </div>
+      )}
+
+      {loading ? <div className="loading"><span className="spin">◌</span></div> :
+        movimientosFiltrados.length === 0 ? <div className="empty-state"><div style={{ fontSize: 28, marginBottom: 8 }}></div>Sin registros de consumo a bordo</div> :
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Base/Barco</th>
+                  <th>Registrado por</th>
+                  <th>Fecha</th>
+                  <th>Ítems con consumo</th>
+                  <th>Notas</th>
+                  <th style={{ width: 90, textAlign: "center" }}>Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {movimientosFiltrados.map(r => (
+                  <tr key={r.id} className="click" onClick={() => setDetalle(r)}>
+                    <td style={{ fontWeight: 600, fontSize: 12 }}>{r.base_buque}</td>
+                    <td style={{ fontSize: 12 }}>{r.registrado_por}</td>
+                    <td className="text-mono" style={{ fontSize: 11, color: "var(--muted)" }}>{fmtDate(r.fecha)}</td>
+                    <td className="text-mono" style={{ fontSize: 11, color: "var(--muted)" }}>{(r.viveres_movimiento_stock_items || []).length}</td>
+                    <td style={{ fontSize: 11, color: "var(--muted)", maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.observaciones || "—"}</td>
+                    <td style={{ textAlign: "center" }} onClick={e => e.stopPropagation()}>
+                      <button className="btn btn-danger btn-sm" onClick={() => handleEliminar(r)} disabled={eliminando === r.id} title="Eliminar registro">
+                        {eliminando === r.id ? "..." : "✕"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      }
+
+      {detalle && <ModalMovimientoDetalle registro={detalle} onClose={() => setDetalle(null)} />}
     </div>
   );
 }
@@ -2758,7 +3228,8 @@ function PagePivot() {
   );
 }
 
-function ViveresApp() {
+function ViveresApp({ session }) {
+  const userEmail = session?.user?.email || "";
   const [page, setPage] = useState("inbox");
   const [notif, setNotif] = useState(null);
   const [inboxCount, setInboxCount] = useState(0);
@@ -2792,6 +3263,7 @@ function ViveresApp() {
     historial: { grupo: "Pedidos",     titulo: "Historial de pedidos", sub: "Todos los pedidos cargados, con su estado y su costo por cabeza y día." },
     tracker:   { grupo: "Seguimiento", titulo: "Seguimiento de entregas", sub: "Avance de cada pedido desde la compra hasta la recepción a bordo." },
     stock_vuelta: { grupo: "Seguimiento", titulo: "Stock vuelta a puerto", sub: "Registrá el stock que queda a bordo cuando un buque vuelve a puerto, para completar el próximo pedido de ese buque." },
+    movimiento_stock: { grupo: "Seguimiento", titulo: "Movimiento stock en puerto", sub: "Registrá a diario el consumo de víveres a bordo para tener el stock real actualizado antes del próximo pedido." },
     catalogo:  { grupo: "Datos",       titulo: "Catálogo de víveres",  sub: "Artículos habilitados, con unidad, rubro y precio de referencia." },
     solicitantes: { grupo: "Datos",    titulo: "Solicitantes",         sub: "Nombres habilitados para crear pedidos. Estandarizá quién puede solicitar víveres." },
     pivot:     { grupo: "Datos",       titulo: "Análisis pivot",       sub: "Consumo y costo cruzados por embarcación, rubro y período." },
@@ -2808,6 +3280,7 @@ function ViveresApp() {
     { titulo: "Seguimiento", items: [
       { id: "tracker", icon: "chart", label: "Seguimiento de entregas", count: 0 },
       { id: "stock_vuelta", icon: "box", label: "Stock vuelta a puerto", count: 0 },
+      { id: "movimiento_stock", icon: "box", label: "Movimiento stock en puerto", count: 0 },
     ]},
     { titulo: "Datos", items: [
       { id: "catalogo",     icon: "box",   label: "Catálogo",       count: 0 },
@@ -2911,7 +3384,8 @@ function ViveresApp() {
             {page === "nuevo"     && <PageNuevo notify={notify} onSaved={() => { setPage("historial"); loadCounts(); }} onCancel={() => setPage("historial")} />}
             {page === "historial" && <PageHistorial onNuevo={() => setPage("nuevo")} notify={notify} />}
             {page === "tracker"   && <PageTracker notify={notify} />}
-            {page === "stock_vuelta" && <PageStockVuelta notify={notify} />}
+            {page === "stock_vuelta" && <PageStockVuelta notify={notify} userEmail={userEmail} />}
+            {page === "movimiento_stock" && <PageMovimientoStock notify={notify} userEmail={userEmail} />}
             {page === "catalogo"  && <PageCatalogo notify={notify} />}
             {page === "solicitantes" && <PageSolicitantes notify={notify} />}
             {page === "pivot"     && <PagePivot />}
@@ -2928,6 +3402,7 @@ function ViveresApp() {
           { id: "historial", label: "Historial",icon: "list",  count: 0 },
           { id: "tracker",   label: "Entregas", icon: "chart", count: 0 },
           { id: "stock_vuelta", label: "Stock", icon: "box", count: 0 },
+          { id: "movimiento_stock", label: "Consumo", icon: "box", count: 0 },
           { id: "catalogo",  label: "Catálogo", icon: "box",   count: 0 },
         ].map(it => (
           <div
@@ -2970,5 +3445,5 @@ export default function App() {
 
   if (!session) return <LoginPage />;
 
-  return <ViveresApp />;
+  return <ViveresApp session={session} />;
 }

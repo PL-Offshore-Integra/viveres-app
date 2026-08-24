@@ -38,12 +38,13 @@ const cantEfectiva = (it) => (it?.cantidad_autorizada != null ? it.cantidad_auto
 
 // Calcula el stock actual por catalogo_id a partir de un registro de "stock
 // vuelta a puerto" (usa el stock verificado por Nicolás si existe, si no el
-// cargado originalmente por el solicitante) menos todo lo consumido en
-// "Movimiento stock en puerto" desde la fecha de ese registro en adelante.
-// Es la fuente única de verdad para el stock a bordo: la usan tanto Nuevo
-// Pedido (para prellenar el stock inicial) como Movimiento stock en puerto
-// (para mostrar cuánto queda antes de cargar el consumo del día).
-function stockActualPorCatalogo(registroVuelta, movimientos = []) {
+// cargado originalmente por el solicitante), sumando lo que llegó a bordo por
+// pedidos ya entregados y restando todo lo consumido en "Movimiento stock en
+// puerto" — ambos desde la fecha de ese registro en adelante. Es la fuente
+// única de verdad para el stock a bordo: la usan Nuevo Pedido (para prellenar
+// el stock inicial), Movimiento stock en puerto (para mostrar cuánto queda
+// antes de cargar el consumo del día) y la revisión/aprobación de pedidos.
+function stockActualPorCatalogo(registroVuelta, movimientos = [], pedidosEntregados = []) {
   const resultado = {};
   if (!registroVuelta) return resultado;
   (registroVuelta.viveres_stock_vuelta_items || []).forEach(it => {
@@ -55,6 +56,18 @@ function stockActualPorCatalogo(registroVuelta, movimientos = []) {
     .forEach(m => (m.viveres_movimiento_stock_items || []).forEach(it => {
       if (!it.catalogo_id || resultado[it.catalogo_id] === undefined) return;
       resultado[it.catalogo_id] = Math.max(0, resultado[it.catalogo_id] - (it.cantidad_consumida || 0));
+    }));
+  // Pedidos ya marcados "entregado" desde la vuelta a puerto en adelante: lo
+  // que llega a bordo se suma al stock, usando la cantidad autorizada por el
+  // comprador (o la pedida, si nunca se ajustó).
+  pedidosEntregados
+    .filter(p => p.base_buque === registroVuelta.base_buque && p.fecha_entrega
+      && new Date(p.fecha_entrega) >= new Date(registroVuelta.fecha))
+    .forEach(p => (p.viveres_pedido_items || []).forEach(it => {
+      if (!it.catalogo_id) return;
+      const cant = cantEfectiva(it);
+      if (!cant) return;
+      resultado[it.catalogo_id] = (resultado[it.catalogo_id] || 0) + cant;
     }));
   return resultado;
 }
@@ -660,7 +673,7 @@ function exportarParaProveedor(pedido, items) {
 }
 
 //  FORM PEDIDO 
-function FormPedido({ pedidoInicial, catalogoInicial, parametros, solicitantes = [], stockVuelta = [], movimientosStock = [], onSave, onCancel, notify }) {
+function FormPedido({ pedidoInicial, catalogoInicial, parametros, solicitantes = [], stockVuelta = [], movimientosStock = [], pedidosEntregados = [], onSave, onCancel, notify }) {
   const [step, setStep] = useState(1);
   const [catalogo] = useState(catalogoInicial || []);
   const [saving, setSaving] = useState(false);
@@ -711,12 +724,13 @@ function FormPedido({ pedidoInicial, catalogoInicial, parametros, solicitantes =
     // cargó) menos todo lo consumido a bordo desde esa fecha en "Movimiento
     // stock en puerto". Así el pedido arranca con el stock real, no con la
     // foto vieja del día que el buque volvió a puerto.
-    const stockPorCatalogo = stockActualPorCatalogo(registroStockVuelta, movimientosStock);
+    const stockPorCatalogo = stockActualPorCatalogo(registroStockVuelta, movimientosStock, pedidosEntregados);
     setItems(prev => prev.map(it => stockPorCatalogo[it.catalogo_id] !== undefined ? { ...it, stock_actual: stockPorCatalogo[it.catalogo_id] } : it));
     const consumoRegistrado = movimientosStock.some(m => m.base_buque === registroStockVuelta.base_buque && new Date(m.fecha) >= new Date(registroStockVuelta.fecha));
-    notify(`Stock a bordo completado con el registro de vuelta a puerto del ${fmtDate(registroStockVuelta.fecha)}${consumoRegistrado ? " y el consumo diario registrado desde entonces" : ""}`, "info");
+    const entregasRegistradas = pedidosEntregados.some(p => p.base_buque === registroStockVuelta.base_buque && p.fecha_entrega && new Date(p.fecha_entrega) >= new Date(registroStockVuelta.fecha));
+    notify(`Stock a bordo completado con el registro de vuelta a puerto del ${fmtDate(registroStockVuelta.fecha)}${consumoRegistrado ? " y el consumo diario registrado desde entonces" : ""}${entregasRegistradas ? " y los pedidos ya entregados" : ""}`, "info");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [registroStockVuelta, movimientosStock]);
+  }, [registroStockVuelta, movimientosStock, pedidosEntregados]);
 
   const paxDias = (cabecera.pax || 0) * (cabecera.dias || 0);
   const todosItems = [...items, ...itemsManuales];
@@ -921,12 +935,13 @@ function PageNuevo({ notify, onSaved, onCancel }) {
   const [solicitantes, setSolicitantes] = useState([]);
   const [stockVuelta, setStockVuelta] = useState([]);
   const [movimientosStock, setMovimientosStock] = useState([]);
+  const [pedidosEntregados, setPedidosEntregados] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
-    // getStockVuelta() y getMovimientosStock() se cargan aparte: si esas
-    // consultas fallan (tablas nuevas de Supabase con algún problema, por
-    // ejemplo), no queremos que se caiga el catálogo ni los solicitantes,
-    // que son imprescindibles para armar el pedido.
+    // getStockVuelta(), getMovimientosStock() y los pedidos entregados se
+    // cargan aparte: si esas consultas fallan (tablas nuevas de Supabase con
+    // algún problema, por ejemplo), no queremos que se caiga el catálogo ni
+    // los solicitantes, que son imprescindibles para armar el pedido.
     Promise.all([api.getCatalogo(), api.getParametros(), api.getSolicitantes()])
       .then(([cat, par, sol]) => { setCatalogo(cat); setParametros(par); setSolicitantes(sol); })
       .catch(e => notify("Error al cargar datos: " + e.message, "error"))
@@ -937,9 +952,12 @@ function PageNuevo({ notify, onSaved, onCancel }) {
     api.getMovimientosStock()
       .then(mv => setMovimientosStock(mv))
       .catch(e => console.error("No se pudo cargar el historial de movimiento de stock en puerto:", e.message));
+    api.getPedidos({ status: "aprobado" })
+      .then(ps => setPedidosEntregados(ps.filter(p => p.tracker_status === "entregado")))
+      .catch(e => console.error("No se pudo cargar los pedidos entregados:", e.message));
   }, [notify]);
   if (loading) return <div className="loading"><span className="spin">◌</span> Cargando catálogo...</div>;
-  return <FormPedido catalogoInicial={catalogo} parametros={parametros} solicitantes={solicitantes} stockVuelta={stockVuelta} movimientosStock={movimientosStock} onSave={async (cab, items) => { await api.crearPedido(cab, items); onSaved(); }} onCancel={onCancel} notify={notify} />;
+  return <FormPedido catalogoInicial={catalogo} parametros={parametros} solicitantes={solicitantes} stockVuelta={stockVuelta} movimientosStock={movimientosStock} pedidosEntregados={pedidosEntregados} onSave={async (cab, items) => { await api.crearPedido(cab, items); onSaved(); }} onCancel={onCancel} notify={notify} />;
 }
 
 //  MODAL: REVISAR PEDIDO 
@@ -969,11 +987,12 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
   // realmente a bordo, no solo lo que se cargó al armar el pedido.
   useEffect(() => {
     setStockCargando(true);
-    Promise.all([api.getStockVuelta(), api.getMovimientosStock()])
-      .then(([sv, mv]) => {
+    Promise.all([api.getStockVuelta(), api.getMovimientosStock(), api.getPedidos({ status: "aprobado" })])
+      .then(([sv, mv, ped]) => {
         const registro = sv.filter(r => r.base_buque === pedido.base_buque)
           .sort((a, b) => new Date(b.fecha) - new Date(a.fecha))[0] || null;
-        setStockActualDict(stockActualPorCatalogo(registro, mv));
+        const entregados = ped.filter(p => p.tracker_status === "entregado");
+        setStockActualDict(stockActualPorCatalogo(registro, mv, entregados));
       })
       .catch(e => console.error("No se pudo calcular el stock actual:", e.message))
       .finally(() => setStockCargando(false));
@@ -1098,7 +1117,7 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
               )}
 
               <div className="info-box accent mb12" style={{ fontSize: 11 }}>
-                <strong>Stock actual</strong> = lo cargado en la última vuelta a puerto de este barco, menos el consumo diario registrado en Movimiento stock en puerto. Usalo como referencia para ajustar la cantidad aprobada.
+                <strong>Stock actual</strong> = lo cargado en la última vuelta a puerto de este barco, menos el consumo diario registrado en Movimiento stock en puerto, más lo ya entregado de pedidos aprobados. Usalo como referencia para ajustar la cantidad aprobada.
               </div>
 
               <div className="table-wrap">
@@ -2199,7 +2218,7 @@ function PageStockVuelta({ notify, userEmail }) {
 // puerto" del barco (usa el stock verificado si Nicolás lo cargó, si no el
 // stock original) menos todo lo consumido desde esa fecha, y resta lo que
 // se cargue hoy.
-function FormMovimientoStock({ base, baseline, movimientosStock = [], solicitantes = [], onSave, onCancel, notify }) {
+function FormMovimientoStock({ base, baseline, movimientosStock = [], pedidosEntregados = [], solicitantes = [], onSave, onCancel, notify }) {
   const [saving, setSaving] = useState(false);
   const [cabecera, setCabecera] = useState({
     base_buque: base,
@@ -2208,7 +2227,7 @@ function FormMovimientoStock({ base, baseline, movimientosStock = [], solicitant
     observaciones: "",
   });
   const stockBase = baseline?.viveres_stock_vuelta_items || [];
-  const stockActualDict = useMemo(() => stockActualPorCatalogo(baseline, movimientosStock), [baseline, movimientosStock]);
+  const stockActualDict = useMemo(() => stockActualPorCatalogo(baseline, movimientosStock, pedidosEntregados), [baseline, movimientosStock, pedidosEntregados]);
   const [items, setItems] = useState(() => stockBase.map(it => ({
     catalogo_id: it.catalogo_id,
     descripcion: it.descripcion,
@@ -2390,6 +2409,7 @@ function PageMovimientoStock({ notify, userEmail }) {
   const [stockVuelta, setStockVuelta] = useState([]);
   const [movimientos, setMovimientos] = useState([]);
   const [solicitantes, setSolicitantes] = useState([]);
+  const [pedidosEntregados, setPedidosEntregados] = useState([]);
   const [loading, setLoading] = useState(true);
   const [baseElegida, setBaseElegida] = useState("");
   const [mostrarForm, setMostrarForm] = useState(false);
@@ -2399,8 +2419,9 @@ function PageMovimientoStock({ notify, userEmail }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [sv, mv, sol] = await Promise.all([api.getStockVuelta(), api.getMovimientosStock(), api.getSolicitantes()]);
+      const [sv, mv, sol, ped] = await Promise.all([api.getStockVuelta(), api.getMovimientosStock(), api.getSolicitantes(), api.getPedidos({ status: "aprobado" })]);
       setStockVuelta(sv); setMovimientos(mv); setSolicitantes(sol);
+      setPedidosEntregados(ped.filter(p => p.tracker_status === "entregado"));
     } catch (e) {
       notify("Error al cargar el stock en puerto: " + e.message, "error");
     } finally {
@@ -2445,6 +2466,7 @@ function PageMovimientoStock({ notify, userEmail }) {
         base={baseElegida}
         baseline={baseline}
         movimientosStock={movimientos}
+        pedidosEntregados={pedidosEntregados}
         solicitantes={solicitantes}
         onSave={handleGuardar}
         onCancel={() => setMostrarForm(false)}

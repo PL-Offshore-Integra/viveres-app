@@ -950,6 +950,8 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
   const [saving, setSaving] = useState(false);
   const [itemsEdit, setItemsEdit] = useState([]);
   const [aprobadoPor, setAprobadoPor] = useState("");
+  const [stockActualDict, setStockActualDict] = useState({});
+  const [stockCargando, setStockCargando] = useState(true);
 
   useEffect(() => {
     // cantidad_pedida (lo que cargó el requisitor) nunca se toca acá.
@@ -961,6 +963,21 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
     setItemsEdit(raw);
     setLoading(false);
   }, [pedido]);
+
+  // Stock actual en vivo (vuelta a puerto − consumo diario cargado en
+  // Movimiento stock en puerto), para que quien aprueba vea cuánto queda
+  // realmente a bordo, no solo lo que se cargó al armar el pedido.
+  useEffect(() => {
+    setStockCargando(true);
+    Promise.all([api.getStockVuelta(), api.getMovimientosStock()])
+      .then(([sv, mv]) => {
+        const registro = sv.filter(r => r.base_buque === pedido.base_buque)
+          .sort((a, b) => new Date(b.fecha) - new Date(a.fecha))[0] || null;
+        setStockActualDict(stockActualPorCatalogo(registro, mv));
+      })
+      .catch(e => console.error("No se pudo calcular el stock actual:", e.message))
+      .finally(() => setStockCargando(false));
+  }, [pedido.base_buque]);
 
   const itemsVisibles = itemsEdit.filter(it => !it._eliminado);
   const huboCambios = itemsEdit.some(
@@ -1080,6 +1097,10 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
                 </div>
               )}
 
+              <div className="info-box accent mb12" style={{ fontSize: 11 }}>
+                <strong>Stock actual</strong> = lo cargado en la última vuelta a puerto de este barco, menos el consumo diario registrado en Movimiento stock en puerto. Usalo como referencia para ajustar la cantidad aprobada.
+              </div>
+
               <div className="table-wrap">
                 <table className="items-edit">
                   <thead>
@@ -1088,6 +1109,7 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
                       <th>Temp.</th>
                       <th>Descripción</th>
                       <th>Unidad</th>
+                      <th style={{ width: 80, textAlign: "right" }}>Stock actual</th>
                       <th style={{ width: 90, textAlign: "right" }}>Cant. original</th>
                       <th style={{ width: 120, textAlign: "right" }}>Cant. aprobada</th>
                       <th style={{ width: 32 }}></th>
@@ -1096,11 +1118,16 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
                   <tbody>
                     {itemsEdit.length === 0 ? (
                       <tr>
-                        <td colSpan={7} style={{ textAlign: "center", padding: 24, color: "var(--muted2)" }}>Sin ítems pedidos</td>
+                        <td colSpan={8} style={{ textAlign: "center", padding: 24, color: "var(--muted2)" }}>Sin ítems pedidos</td>
                       </tr>
                     ) : (
                       itemsEdit.map(it => {
                         const modificado = !it._eliminado && it.cantidad_autorizada !== it.cantidad_pedida;
+                        // Preferimos el stock actual calculado en vivo; si el ítem no está
+                        // linkeado al catálogo (ingreso manual) o no hay dato, mostramos el
+                        // que se guardó al armar el pedido.
+                        const stockLive = it.catalogo_id != null ? stockActualDict[it.catalogo_id] : undefined;
+                        const stockAMostrar = stockLive !== undefined ? stockLive : it.stock_actual;
                         return (
                           <tr
                             key={it.id}
@@ -1120,6 +1147,10 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
                               {it.descripcion}
                             </td>
                             <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.unidad}</td>
+                            {/* Stock actual — vuelta a puerto menos consumo diario, calculado en vivo */}
+                            <td className="text-mono" style={{ fontSize: 12, textAlign: "right", color: stockAMostrar > 0 ? "var(--navy)" : "var(--muted2)" }}>
+                              {stockCargando ? "…" : (stockAMostrar != null ? fmt(stockAMostrar) : "—")}
+                            </td>
                             {/* Cantidad original — lo que cargó el requisitor, fijo, no se toca */}
                             <td style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--muted)", textAlign: "right" }}>
                               {it.cantidad_pedida}

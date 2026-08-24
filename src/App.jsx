@@ -71,6 +71,22 @@ const api = {
     if (error) throw error;
     return data || [];
   },
+  async getCategoriasValidas() {
+    const { data, error } = await supabase.from("viveres_categorias").select("*").order("orden");
+    if (error) throw error;
+    return data || [];
+  },
+  async guardarParametro(grupo, min, max, unidad) {
+    // upsert por grupo (para edición desde el Dashboard)
+    const { data: exist } = await supabase.from("viveres_parametros_dieta").select("id").eq("grupo", grupo).maybeSingle();
+    if (exist) {
+      const { error } = await supabase.from("viveres_parametros_dieta").update({ min, max, unidad_medida: unidad }).eq("id", exist.id);
+      if (error) throw error;
+    } else {
+      const { error } = await supabase.from("viveres_parametros_dieta").insert([{ grupo, min, max, unidad_medida: unidad }]);
+      if (error) throw error;
+    }
+  },
   async getPedidos(filtros = {}) {
     let q = supabase.from("viveres_pedidos").select("*, viveres_pedido_items(*)").order("created_at", { ascending: false });
     if (filtros.status) q = q.eq("status", filtros.status);
@@ -1369,6 +1385,257 @@ function ModalTrackerEditar({ pedido, onClose, onSave, notify }) {
 }
 
 //  PAGE: TRACKER 
+function PageDashboardConsumo({ notify }) {
+  const [pedidos, setPedidos] = useState([]);
+  const [parametros, setParametros] = useState([]);
+  const [catalogo, setCatalogo] = useState([]);
+  const [categorias, setCategorias] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [buque, setBuque] = useState("todos");
+  const [desde, setDesde] = useState("");
+  const [hasta, setHasta] = useState("");
+  const [editParam, setEditParam] = useState(null);
+  const [savingParam, setSavingParam] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [ped, par, cat, cats] = await Promise.all([
+        api.getPedidos({ statuses: ["aprobado", "enviado", "en_camino", "entregado"] }),
+        api.getParametros(),
+        api.getCatalogo(),
+        api.getCategoriasValidas(),
+      ]);
+      setPedidos(ped);
+      setParametros(par);
+      setCatalogo(cat);
+      setCategorias(cats);
+    } catch (e) {
+      notify("Error al cargar el dashboard: " + e.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  }, [notify]);
+  useEffect(() => { load(); }, [load]);
+
+  // mapa categoria -> es_comida
+  const esComida = useMemo(() => {
+    const m = {};
+    categorias.forEach(c => { m[c.nombre] = c.es_comida; });
+    return m;
+  }, [categorias]);
+
+  // mapa grupo dieta -> {min,max,unidad}
+  const dieta = useMemo(() => {
+    const m = {};
+    parametros.forEach(p => { m[p.grupo] = { min: Number(p.min), max: Number(p.max), unidad: p.unidad_medida }; });
+    return m;
+  }, [parametros]);
+
+  // pedidos filtrados por buque y fecha (usa fecha_necesaria como fecha de entrega/consumo)
+  const pedidosFiltrados = useMemo(() => {
+    return pedidos.filter(p => {
+      if (buque !== "todos" && p.base_buque !== buque) return false;
+      const f = p.fecha_necesaria || p.fecha_pedido;
+      if (desde && f && f < desde) return false;
+      if (hasta && f && f > hasta) return false;
+      return true;
+    });
+  }, [pedidos, buque, desde, hasta]);
+
+  // agregación por categoría: real (lo pedido/entregado, normalizado a kg via volumen_peso)
+  // y teórico (banda x pax x dias) para las categorías que tienen grupo de dieta
+  const analisis = useMemo(() => {
+    // real por categoría
+    const realCat = {};
+    let totalPaxDias = 0;
+    const paxDiasPorBuque = {};
+
+    pedidosFiltrados.forEach(p => {
+      const paxDias = (Number(p.pax) || 0) * (Number(p.dias) || 0);
+      totalPaxDias += paxDias;
+      (p.viveres_pedido_items || []).forEach(it => {
+        const cat = it.categoria || "Otro";
+        const cant = cantEfectiva(it) * (Number(it.volumen_peso) || 1); // normalizado a unidad_analisis (kg/l)
+        realCat[cat] = (realCat[cat] || 0) + cant;
+      });
+    });
+
+    // teórico por categoría = banda × paxDias (para categorías cuyo nombre coincide con un grupo de dieta)
+    const filas = [];
+    const cats = [...new Set([...Object.keys(realCat), ...Object.keys(dieta)])];
+    cats.forEach(cat => {
+      if (esComida[cat] === false) return; // saltear no-comida
+      const real = realCat[cat] || 0;
+      const banda = dieta[cat];
+      let teoMin = null, teoMax = null;
+      if (banda) {
+        teoMin = banda.min * totalPaxDias;
+        teoMax = banda.max * totalPaxDias;
+      }
+      filas.push({ categoria: cat, real, teoMin, teoMax, unidad: banda?.unidad || "Kg", tieneBanda: !!banda });
+    });
+    filas.sort((a, b) => b.real - a.real);
+    return { filas, totalPaxDias };
+  }, [pedidosFiltrados, dieta, esComida]);
+
+  // serie temporal: real por fecha (para telemetría)
+  const serie = useMemo(() => {
+    const porFecha = {};
+    pedidosFiltrados.forEach(p => {
+      const f = (p.fecha_necesaria || p.fecha_pedido || "").slice(0, 10);
+      if (!f) return;
+      const paxDias = (Number(p.pax) || 0) * (Number(p.dias) || 0);
+      let kg = 0;
+      (p.viveres_pedido_items || []).forEach(it => {
+        if (esComida[it.categoria] === false) return;
+        kg += cantEfectiva(it) * (Number(it.volumen_peso) || 1);
+      });
+      if (!porFecha[f]) porFecha[f] = { fecha: f, kg: 0, paxDias: 0 };
+      porFecha[f].kg += kg;
+      porFecha[f].paxDias += paxDias;
+    });
+    return Object.values(porFecha)
+      .map(x => ({ ...x, gPorPaxDia: x.paxDias ? (x.kg * 1000) / x.paxDias : 0 }))
+      .sort((a, b) => a.fecha < b.fecha ? -1 : 1);
+  }, [pedidosFiltrados, esComida]);
+
+  const guardarParam = async () => {
+    if (!editParam) return;
+    const min = parseFloat(editParam.min), max = parseFloat(editParam.max);
+    if (isNaN(min) || isNaN(max)) { notify("Min y max deben ser números", "error"); return; }
+    if (min > max) { notify("El mínimo no puede ser mayor al máximo", "error"); return; }
+    setSavingParam(true);
+    try {
+      await api.guardarParametro(editParam.grupo, min, max, editParam.unidad || "Kg");
+      notify(`Parámetro de ${editParam.grupo} actualizado`, "success");
+      setEditParam(null);
+      await load();
+    } catch (e) {
+      notify("Error: " + e.message, "error");
+    } finally {
+      setSavingParam(false);
+    }
+  };
+
+  if (loading) return <div className="card"><div style={{ textAlign: "center", padding: 40, color: "var(--muted)" }}>Cargando…</div></div>;
+
+  const totalReal = analisis.filas.reduce((s, f) => s + f.real, 0);
+  const buquesConDatos = [...new Set(pedidos.map(p => p.base_buque))].filter(Boolean);
+
+  // telemetría SVG
+  const chart = (() => {
+    if (!serie.length) return <div style={{ padding: 24, textAlign: "center", color: "var(--muted2)", fontSize: 13 }}>Sin datos en el rango.</div>;
+    const W = 900, H = 220, pad = { l: 44, r: 14, t: 14, b: 30 };
+    const maxY = Math.max(...serie.map(s => s.gPorPaxDia), 10) * 1.1;
+    const X = i => pad.l + (serie.length <= 1 ? 0 : (i / (serie.length - 1)) * (W - pad.l - pad.r));
+    const Y = v => H - pad.b - (v / maxY) * (H - pad.t - pad.b);
+    const pts = serie.map((s, i) => `${X(i)},${Y(s.gPorPaxDia)}`).join(" ");
+    let gy = [];
+    for (let k = 0; k <= 4; k++) { const v = maxY * k / 4, y = Y(v); gy.push(<g key={k}><line x1={pad.l} y1={y} x2={W - pad.r} y2={y} stroke="#E4E8EC" /><text x={pad.l - 6} y={y + 3} textAnchor="end" fontSize="10" fill="#8A94A0">{Math.round(v)}</text></g>); }
+    const step = Math.ceil(serie.length / 8);
+    const gx = serie.map((s, i) => (i % step === 0 || i === serie.length - 1) ? <text key={i} x={X(i)} y={H - pad.b + 15} textAnchor="middle" fontSize="9" fill="#8A94A0">{s.fecha.slice(5)}</text> : null);
+    const dots = serie.map((s, i) => <circle key={i} cx={X(i)} cy={Y(s.gPorPaxDia)} r="2.5" fill="var(--accent)"><title>{s.fecha}: {Math.round(s.gPorPaxDia)} g/pax·día</title></circle>);
+    return (
+      <div style={{ overflowX: "auto" }}>
+        <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", minWidth: 560, height: H }}>
+          {gy}{gx}
+          <polyline points={pts} fill="none" stroke="var(--accent)" strokeWidth="2" />
+          {dots}
+          <text x={pad.l} y="10" fontSize="10" fill="var(--muted)">g / pax·día (comida)</text>
+        </svg>
+      </div>
+    );
+  })();
+
+  return (
+    <div>
+      {/* Filtros */}
+      <div className="card">
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <FG label="Embarcación">
+            <select value={buque} onChange={e => setBuque(e.target.value)}>
+              <option value="todos">Todas</option>
+              {buquesConDatos.map(b => <option key={b} value={b}>{b}</option>)}
+            </select>
+          </FG>
+          <FG label="Desde"><input type="date" value={desde} onChange={e => setDesde(e.target.value)} /></FG>
+          <FG label="Hasta"><input type="date" value={hasta} onChange={e => setHasta(e.target.value)} /></FG>
+          {(desde || hasta || buque !== "todos") && <button className="btn btn-ghost btn-sm" onClick={() => { setBuque("todos"); setDesde(""); setHasta(""); }} style={{ height: 34 }}>Limpiar</button>}
+          <div style={{ marginLeft: "auto", fontSize: 12, color: "var(--muted)" }}>{pedidosFiltrados.length} pedidos · {analisis.totalPaxDias} raciones (pax×días)</div>
+        </div>
+      </div>
+
+      {/* KPIs */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12, marginBottom: 16 }}>
+        <div className="card" style={{ margin: 0 }}><div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--muted)", fontFamily: "var(--mono)" }}>Raciones (pax×días)</div><div style={{ fontSize: 26, fontWeight: 700, color: "var(--navy)", marginTop: 4 }}>{analisis.totalPaxDias}</div></div>
+        <div className="card" style={{ margin: 0 }}><div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--muted)", fontFamily: "var(--mono)" }}>Total comida (real)</div><div style={{ fontSize: 26, fontWeight: 700, color: "var(--navy)", marginTop: 4 }}>{totalReal.toFixed(0)} <span style={{ fontSize: 14, color: "var(--muted)" }}>kg</span></div></div>
+        <div className="card" style={{ margin: 0 }}><div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--muted)", fontFamily: "var(--mono)" }}>g / pax·día (real)</div><div style={{ fontSize: 26, fontWeight: 700, color: "var(--navy)", marginTop: 4 }}>{analisis.totalPaxDias ? Math.round(totalReal * 1000 / analisis.totalPaxDias) : 0} <span style={{ fontSize: 14, color: "var(--muted)" }}>g</span></div></div>
+      </div>
+
+      {/* Telemetría */}
+      <div className="card">
+        <div style={{ fontFamily: "var(--mono)", fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--navy)", marginBottom: 8 }}>Telemetría · g por pax·día en el tiempo</div>
+        {chart}
+      </div>
+
+      {/* Tabla teórico vs real */}
+      <div className="card">
+        <div style={{ fontFamily: "var(--mono)", fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--navy)", marginBottom: 4 }}>Consumo por rubro · teórico (banda) vs real</div>
+        <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 12 }}>El teórico es banda de dieta × raciones. Solo los rubros con banda cargada muestran teórico. El real es lo pedido/autorizado, normalizado.</div>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead><tr style={{ textAlign: "left", borderBottom: "2px solid var(--border)" }}>
+            <th style={{ padding: "8px 6px", fontSize: 11, textTransform: "uppercase", color: "var(--muted)" }}>Rubro</th>
+            <th style={{ padding: "8px 6px", fontSize: 11, textTransform: "uppercase", color: "var(--muted)", textAlign: "right" }}>Teórico (banda)</th>
+            <th style={{ padding: "8px 6px", fontSize: 11, textTransform: "uppercase", color: "var(--muted)", textAlign: "right" }}>Real</th>
+            <th style={{ padding: "8px 6px", fontSize: 11, textTransform: "uppercase", color: "var(--muted)", textAlign: "right" }}>Estado</th>
+            <th style={{ padding: "8px 6px" }}></th>
+          </tr></thead>
+          <tbody>
+            {analisis.filas.map(f => {
+              let estado = "—";
+              if (f.tieneBanda && f.teoMax != null) {
+                if (f.real < f.teoMin) estado = <span style={{ color: "var(--accent2)", fontWeight: 600 }}>Bajo banda</span>;
+                else if (f.real > f.teoMax) estado = <span style={{ color: "var(--danger)", fontWeight: 600 }}>Sobre banda</span>;
+                else estado = <span style={{ color: "var(--accent)", fontWeight: 600 }}>En banda</span>;
+              }
+              return (
+                <tr key={f.categoria} style={{ borderBottom: "1px solid var(--border)" }}>
+                  <td style={{ padding: "8px 6px", fontWeight: 600 }}>{f.categoria}</td>
+                  <td style={{ padding: "8px 6px", textAlign: "right", fontFamily: "var(--mono)", color: f.tieneBanda ? "var(--ink)" : "var(--muted2)" }}>{f.tieneBanda ? `${f.teoMin.toFixed(0)}–${f.teoMax.toFixed(0)} ${f.unidad}` : "sin banda"}</td>
+                  <td style={{ padding: "8px 6px", textAlign: "right", fontFamily: "var(--mono)", fontWeight: 600 }}>{f.real.toFixed(1)} {f.unidad}</td>
+                  <td style={{ padding: "8px 6px", textAlign: "right" }}>{estado}</td>
+                  <td style={{ padding: "8px 6px", textAlign: "right" }}>{f.tieneBanda && <button className="btn btn-ghost btn-sm" style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => setEditParam({ grupo: f.categoria, min: dieta[f.categoria].min, max: dieta[f.categoria].max, unidad: dieta[f.categoria].unidad })}>Editar banda</button>}</td>
+                </tr>
+              );
+            })}
+            {!analisis.filas.length && <tr><td colSpan={5} style={{ padding: 24, textAlign: "center", color: "var(--muted2)" }}>Sin datos para los filtros elegidos.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Editor de banda de dieta */}
+      {editParam && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(8,47,78,.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }} onClick={e => e.target === e.currentTarget && setEditParam(null)}>
+          <div className="card" style={{ maxWidth: 420, width: "90%", margin: 0 }}>
+            <div style={{ fontFamily: "var(--mono)", fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--navy)", marginBottom: 12 }}>Editar banda de dieta · {editParam.grupo}</div>
+            <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 12 }}>Consumo por persona por día (la banda se multiplica por pax×días para el teórico).</div>
+            <div style={{ display: "flex", gap: 12 }}>
+              <FG label="Mínimo"><input type="number" step="0.01" min="0" value={editParam.min} onChange={e => setEditParam({ ...editParam, min: e.target.value })} /></FG>
+              <FG label="Máximo"><input type="number" step="0.01" min="0" value={editParam.max} onChange={e => setEditParam({ ...editParam, max: e.target.value })} /></FG>
+              <FG label="Unidad"><select value={editParam.unidad} onChange={e => setEditParam({ ...editParam, unidad: e.target.value })}><option>Kg</option><option>Ltrs</option></select></FG>
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
+              <button className="btn btn-ghost btn-sm" onClick={() => setEditParam(null)}>Cancelar</button>
+              <button className="btn btn-primary" onClick={guardarParam} disabled={savingParam}>{savingParam ? "Guardando…" : "Guardar"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PageTracker({ notify }) {
   const [pedidos, setPedidos] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -3281,6 +3548,7 @@ function ViveresApp({ session }) {
     nuevo:     { grupo: "Pedidos",     titulo: "Nuevo pedido",         sub: "Cargá el pedido por embarcación. La dieta y la dotación definen las cantidades." },
     historial: { grupo: "Pedidos",     titulo: "Historial de pedidos", sub: "Todos los pedidos cargados, con su estado y su costo por cabeza y día." },
     tracker:   { grupo: "Seguimiento", titulo: "Seguimiento de entregas", sub: "Avance de cada pedido desde la compra hasta la recepción a bordo." },
+    dashboard: { grupo: "Seguimiento", titulo: "Dashboard de consumo", sub: "Consumo teórico (banda de dieta) vs. real por embarcación, rubro y período. Solo lectura sobre los datos ya cargados." },
     stock_vuelta: { grupo: "Seguimiento", titulo: "Stock vuelta a puerto", sub: "Registrá el stock que queda a bordo cuando un buque vuelve a puerto, para completar el próximo pedido de ese buque." },
     movimiento_stock: { grupo: "Seguimiento", titulo: "Movimiento stock en puerto", sub: "Registrá a diario el consumo de víveres a bordo para tener el stock real actualizado antes del próximo pedido." },
     catalogo:  { grupo: "Datos",       titulo: "Catálogo de víveres",  sub: "Artículos habilitados, con unidad, rubro y precio de referencia." },
@@ -3298,6 +3566,7 @@ function ViveresApp({ session }) {
     ]},
     { titulo: "Seguimiento", items: [
       { id: "tracker", icon: "chart", label: "Seguimiento de entregas", count: 0 },
+      { id: "dashboard", icon: "chart", label: "Dashboard consumo", count: 0 },
       { id: "stock_vuelta", icon: "box", label: "Stock vuelta a puerto", count: 0 },
       { id: "movimiento_stock", icon: "box", label: "Movimiento stock en puerto", count: 0 },
     ]},
@@ -3403,6 +3672,7 @@ function ViveresApp({ session }) {
             {page === "nuevo"     && <PageNuevo notify={notify} onSaved={() => { setPage("historial"); loadCounts(); }} onCancel={() => setPage("historial")} />}
             {page === "historial" && <PageHistorial onNuevo={() => setPage("nuevo")} notify={notify} />}
             {page === "tracker"   && <PageTracker notify={notify} />}
+            {page === "dashboard" && <PageDashboardConsumo notify={notify} />}
             {page === "stock_vuelta" && <PageStockVuelta notify={notify} userEmail={userEmail} />}
             {page === "movimiento_stock" && <PageMovimientoStock notify={notify} userEmail={userEmail} />}
             {page === "catalogo"  && <PageCatalogo notify={notify} />}

@@ -904,6 +904,7 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
   const [saving, setSaving] = useState(false);
   const [itemsEdit, setItemsEdit] = useState([]);
   const [aprobadoPor, setAprobadoPor] = useState("");
+  const [parametros, setParametros] = useState([]);
 
   useEffect(() => {
     // cantidad_pedida (lo que cargó el requisitor) nunca se toca acá.
@@ -916,10 +917,34 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
     setLoading(false);
   }, [pedido]);
 
+  // Ración por persona/día (Datos > Ración por persona/día): para avisar,
+  // sin bloquear, si lo autorizado en una categoría se pasa del máximo
+  // orientativo. Es solo una alerta — el comprador decide si aprueba igual.
+  useEffect(() => {
+    api.getParametros().then(setParametros).catch(e => console.error("No se pudieron cargar los parámetros de ración:", e.message));
+  }, []);
+
   const itemsVisibles = itemsEdit.filter(it => !it._eliminado);
   const huboCambios = itemsEdit.some(
     it => it._eliminado || it.cantidad_autorizada !== it.cantidad_pedida
   );
+
+  // Cuánto es, por persona y por día, lo autorizado en cada categoría —
+  // mismo cálculo que "Control de dieta" en Nuevo pedido, pero sobre lo
+  // que se está por aprobar en vez de sobre lo que se cargó al pedir.
+  const paxDias = (pedido.pax || 0) * (pedido.dias || 0);
+  const dietaPedido = {};
+  itemsVisibles.forEach(it => {
+    const cant = (it.cantidad_autorizada || 0) * (it.volumen_peso || 1);
+    dietaPedido[it.categoria] = (dietaPedido[it.categoria] || 0) + cant;
+  });
+  if (paxDias > 0) Object.keys(dietaPedido).forEach(cat => { dietaPedido[cat] = dietaPedido[cat] / paxDias; });
+  const excedidas = {}; // categoria -> parámetro excedido
+  parametros.forEach(p => {
+    const val = dietaPedido[p.grupo];
+    if (val != null && p.max != null && val > p.max) excedidas[p.grupo] = { val, ...p };
+  });
+  const hayExcedidas = Object.keys(excedidas).length > 0;
 
   const setCantidad = (id, val) => {
     setItemsEdit(prev =>
@@ -1034,6 +1059,17 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
                 </div>
               )}
 
+              {hayExcedidas && (
+                <div className="info-box" style={{ fontSize: 12, marginBottom: 12, background: "#FEF2F2", border: "1px solid #FECACA", color: "#991B1B" }}>
+                  <div style={{ fontWeight: 700, marginBottom: 4 }}>Hay categorías por encima de la ración estimada por persona/día — revisá las cantidades marcadas en rojo:</div>
+                  {Object.entries(excedidas).map(([cat, p]) => (
+                    <div key={cat} style={{ fontFamily: "var(--mono)" }}>
+                      {cat}: {p.val.toFixed(2)} {p.unidad_medida} — supera el máximo de {p.max} {p.unidad_medida} por persona/día.
+                    </div>
+                  ))}
+                </div>
+              )}
+
               <div className="table-wrap">
                 <table className="items-edit">
                   <thead>
@@ -1055,16 +1091,20 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
                     ) : (
                       itemsEdit.map(it => {
                         const modificado = !it._eliminado && it.cantidad_autorizada !== it.cantidad_pedida;
+                        const excedido = !it._eliminado && excedidas[it.categoria];
                         return (
                           <tr
                             key={it.id}
                             style={{
                               opacity: it._eliminado ? 0.45 : 1,
                               background: it._eliminado ? "#FEF2F2" : modificado ? "#FFFBEB" : "inherit",
+                              borderLeft: excedido ? "3px solid var(--danger)" : "3px solid transparent",
                               transition: "all .15s",
                             }}
                           >
-                            <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.categoria}</td>
+                            <td style={{ fontSize: 11, color: excedido ? "var(--danger)" : "var(--muted)", fontWeight: excedido ? 700 : 400 }} title={excedido ? `Supera la ración estimada de ${excedido.max} ${excedido.unidad_medida} por persona/día` : undefined}>
+                              {excedido && "▲ "}{it.categoria}
+                            </td>
                             <td><TempBadge temp={it.temperatura} /></td>
                             <td style={{
                               fontWeight: 500, fontSize: 12,
@@ -2761,7 +2801,196 @@ function PageCatalogo({ notify }) {
   );
 }
 
-//  LOGIN PAGE 
+//  PAGE: RACIÓN POR PERSONA/DÍA
+//  Mínimo y máximo orientativo por categoría, por persona y por día (según
+//  la planilla de ración a bordo). Se usa para avisar en Nuevo pedido y al
+//  revisar/aprobar si una categoría se pasa de lo estimado.
+function PageParametrosDieta({ notify, userEmail }) {
+  // Solo nthompson@ploffshore.com puede editar estos valores. El chequeo
+  // real está del lado del servidor (RLS de viveres_parametros_dieta) —
+  // esto solo oculta los controles para el resto.
+  const esAdmin = userEmail === NICOLAS_EMAIL;
+  const [parametros, setParametros] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [savingGrupo, setSavingGrupo] = useState(null);
+  const [eliminandoGrupo, setEliminandoGrupo] = useState(null);
+  const [editados, setEditados] = useState({}); // grupo -> campos modificados
+  const [nuevo, setNuevo] = useState({ grupo: "", min: "", max: "", unidad_medida: "Kg" });
+  const [agregando, setAgregando] = useState(false);
+
+  const load = () => {
+    setLoading(true);
+    api.getParametros().then(d => { setParametros(d.sort((a, b) => a.grupo.localeCompare(b.grupo))); setLoading(false); })
+      .catch(e => { notify("Error al cargar: " + e.message, "error"); setLoading(false); });
+  };
+  useEffect(load, []);
+
+  const setcampo = (id, campo, valor) => {
+    setEditados(prev => ({ ...prev, [id]: { ...(prev[id] || {}), [campo]: valor } }));
+    setParametros(prev => prev.map(p => p.id === id ? { ...p, [campo]: valor } : p));
+  };
+  const getVal = (p, campo) => editados[p.id]?.[campo] !== undefined ? editados[p.id][campo] : p[campo];
+  const tieneCambios = (id) => !!editados[id] && Object.keys(editados[id]).length > 0;
+
+  const handleGuardarFila = async (p) => {
+    if (!tieneCambios(p.id)) return;
+    setSavingGrupo(p.id);
+    try {
+      const cambios = { ...editados[p.id] };
+      if (cambios.min !== undefined) cambios.min = cambios.min === "" ? null : parseFloat(cambios.min);
+      if (cambios.max !== undefined) cambios.max = cambios.max === "" ? null : parseFloat(cambios.max);
+      const { error } = await supabase.from("viveres_parametros_dieta").update(cambios).eq("id", p.id);
+      if (error) throw error;
+      setEditados(prev => { const n = { ...prev }; delete n[p.id]; return n; });
+      notify("Guardado", "success");
+    } catch (e) {
+      notify("Error: " + e.message, "error");
+    } finally {
+      setSavingGrupo(null);
+    }
+  };
+
+  const handleEliminarFila = async (p) => {
+    if (!window.confirm(`¿Eliminar la ración de referencia de "${p.grupo}"?`)) return;
+    setEliminandoGrupo(p.id);
+    try {
+      const { error } = await supabase.from("viveres_parametros_dieta").delete().eq("id", p.id);
+      if (error) throw error;
+      setParametros(prev => prev.filter(x => x.id !== p.id));
+      notify("Eliminado", "warn");
+    } catch (e) {
+      notify("Error: " + e.message, "error");
+    } finally {
+      setEliminandoGrupo(null);
+    }
+  };
+
+  const handleAgregar = async () => {
+    if (!nuevo.grupo.trim()) return alert("Elegí la categoría");
+    if (parametros.some(p => p.grupo === nuevo.grupo)) return alert("Esa categoría ya tiene una ración cargada — editala en la fila existente.");
+    setAgregando(true);
+    try {
+      const fila = {
+        grupo: nuevo.grupo,
+        min: nuevo.min === "" ? null : parseFloat(nuevo.min),
+        max: nuevo.max === "" ? null : parseFloat(nuevo.max),
+        unidad_medida: nuevo.unidad_medida,
+      };
+      const { data, error } = await supabase.from("viveres_parametros_dieta").insert([fila]).select().single();
+      if (error) throw error;
+      setParametros(prev => [...prev, data].sort((a, b) => a.grupo.localeCompare(b.grupo)));
+      setNuevo({ grupo: "", min: "", max: "", unidad_medida: "Kg" });
+      notify("Categoría agregada", "success");
+    } catch (e) { alert("Error: " + e.message); }
+    finally { setAgregando(false); }
+  };
+
+  const inStyle = {
+    background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 4,
+    color: "var(--text)", fontFamily: "var(--mono)", fontSize: 12, padding: "5px 8px",
+    outline: "none", width: 90, textAlign: "right",
+  };
+  const inStyleMod = { ...inStyle, background: "#FEF9C3", border: "1px solid #FDE68A", fontWeight: 600 };
+  const mod = (p, campo) => editados[p.id]?.[campo] !== undefined;
+
+  if (loading) return <div className="loading"><span className="spin">◌</span> Cargando...</div>;
+
+  return (
+    <div>
+      <div className="info-box accent mb12" style={{ fontSize: 12 }}>
+        Mínimo y máximo orientativo por persona y por día, por categoría — de la planilla de ración a bordo. Se usa para avisar en <strong>Nuevo pedido</strong>, al <strong>revisar/aprobar</strong> y en <strong>Análisis pivot</strong> si una categoría se pasa de lo estimado (es una alerta, no bloquea el pedido).
+        {esAdmin
+          ? " Editá los valores cuando quieras ajustar el criterio."
+          : " Solo Nicolás Thompson puede editar estos valores."}
+      </div>
+
+      <div className="table-wrap">
+        <table className="tracker-table">
+          <thead>
+            <tr>
+              <th>Categoría</th>
+              <th style={{ width: 100, textAlign: "right" }}>Mínimo</th>
+              <th style={{ width: 100, textAlign: "right" }}>Máximo</th>
+              <th style={{ width: 110 }}>Unidad</th>
+              {esAdmin && <th style={{ width: 70 }}></th>}
+            </tr>
+          </thead>
+          <tbody>
+            {parametros.map(p => (
+              <tr key={p.id}>
+                <td style={{ fontWeight: 600 }}>{p.grupo}</td>
+                {esAdmin ? (
+                  <>
+                    <td style={{ textAlign: "right" }}>
+                      <input type="number" step="0.01" value={getVal(p, "min") ?? ""} onChange={e => setcampo(p.id, "min", e.target.value)} style={mod(p, "min") ? inStyleMod : inStyle} />
+                    </td>
+                    <td style={{ textAlign: "right" }}>
+                      <input type="number" step="0.01" value={getVal(p, "max") ?? ""} onChange={e => setcampo(p.id, "max", e.target.value)} style={mod(p, "max") ? inStyleMod : inStyle} />
+                    </td>
+                    <td>
+                      <select value={getVal(p, "unidad_medida") || "Kg"} onChange={e => setcampo(p.id, "unidad_medida", e.target.value)} style={{ ...inStyle, width: "100%", textAlign: "left" }}>
+                        <option>Kg</option><option>Ltrs</option><option>un</option>
+                      </select>
+                    </td>
+                    <td style={{ display: "flex", gap: 4 }}>
+                      {tieneCambios(p.id) && (
+                        <button className="btn btn-primary btn-sm" onClick={() => handleGuardarFila(p)} disabled={savingGrupo === p.id}>
+                          {savingGrupo === p.id ? "..." : "✓"}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => handleEliminarFila(p)}
+                        title="Eliminar"
+                        disabled={eliminandoGrupo === p.id}
+                        style={{ background: "none", border: "none", color: "var(--muted2)", cursor: "pointer", fontSize: 14, padding: "3px 5px", borderRadius: 4 }}
+                      >
+                        {eliminandoGrupo === p.id ? "..." : "✕"}
+                      </button>
+                    </td>
+                  </>
+                ) : (
+                  <>
+                    <td className="text-mono" style={{ textAlign: "right" }}>{p.min}</td>
+                    <td className="text-mono" style={{ textAlign: "right" }}>{p.max}</td>
+                    <td style={{ color: "var(--muted)" }}>{p.unidad_medida}</td>
+                  </>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {esAdmin && (
+        <div className="card mt16">
+          <div className="card-title">Agregar categoría</div>
+          <div className="form-grid-3">
+            <FG label="Categoría *">
+              <select value={nuevo.grupo} onChange={e => setNuevo(n => ({ ...n, grupo: e.target.value }))}>
+                <option value="">Seleccionar...</option>
+                {CATEGORIAS_CATALOGO.filter(c => !parametros.some(p => p.grupo === c)).map(c => <option key={c}>{c}</option>)}
+              </select>
+            </FG>
+            <FG label="Mínimo"><input type="number" step="0.01" value={nuevo.min} onChange={e => setNuevo(n => ({ ...n, min: e.target.value }))} /></FG>
+            <FG label="Máximo"><input type="number" step="0.01" value={nuevo.max} onChange={e => setNuevo(n => ({ ...n, max: e.target.value }))} /></FG>
+          </div>
+          <div className="form-grid-3">
+            <FG label="Unidad">
+              <select value={nuevo.unidad_medida} onChange={e => setNuevo(n => ({ ...n, unidad_medida: e.target.value }))}>
+                <option>Kg</option><option>Ltrs</option><option>un</option>
+              </select>
+            </FG>
+          </div>
+          <div className="form-footer-actions mt12">
+            <button className="btn btn-primary" onClick={handleAgregar} disabled={agregando}>{agregando ? "Guardando..." : "Agregar"}</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+//  LOGIN PAGE
 function LoginPage() {
   const [email, setEmail]     = useState("");
   const [pass, setPass]       = useState("");
@@ -2884,7 +3113,7 @@ function PagePivot() {
   const [filtHasta,  setFiltHasta]  = useState("");
   const [busqueda,   setBusqueda]   = useState("");
   const [expandidos, setExpandidos] = useState({});
-  //  Multi-selección de pedidos 
+  //  Multi-selección de pedidos
   const [seleccionados, setSeleccionados] = useState(new Set()); // Set de ids
   const [modoSel, setModoSel] = useState(false); // false = todos los pedidos filtrados
 
@@ -3181,7 +3410,379 @@ function PagePivot() {
                       {colKeys.map(ck => {
                         const v = tabla.get(fk)?.get(ck)||0;
                         return (
-                          <td key={ck} style={{padding:"7px 10px",textAlign:"right",background:heatBg(v,maxCell),borderBottom:"1px solid var(--border)"}}>
+                          <td
+                            key={ck}
+                            style={{
+                              padding:"7px 10px",textAlign:"right",
+                              background: heatBg(v,maxCell),
+                              borderBottom:"1px solid var(--border)",
+                            }}
+                          >
+                            {fmtVal(v)}
+                          </td>
+                        );
+                      })}
+                      <td style={{padding:"7px 10px",textAlign:"right",fontWeight:700,background:"#F0F4F8",position:"sticky",right:0,borderLeft:"1px solid var(--border)"}}>
+                        {fmtVal(tot)}
+                      </td>
+                    </tr>
+                  );
+
+                  const subRows = (isExp && subData)
+                    ? subData.keys.map(sk => {
+                        const sTot = [...(subData.map.get(sk)?.values()||[])].reduce((s,v)=>s+v,0);
+                        return (
+                          <tr key={`${fk}__${sk}`} style={{background:"#FAFBFD",borderBottom:"1px solid var(--border)"}}>
+                            <td style={{padding:"5px 12px 5px 36px",position:"sticky",left:0,background:"#FAFBFD",borderRight:"1px solid var(--border)"}}>
+                              <span style={{fontSize:11,color:"var(--text)"}}>↳ </span>
+                              <span style={{fontSize:11,color:"var(--text)",fontWeight:500}}>{sk}</span>
+                            </td>
+                            {colKeys.map(ck => {
+                              const v = subData.map.get(sk)?.get(ck)||0;
+                              return (
+                                <td key={ck} style={{padding:"5px 10px",textAlign:"right",fontSize:11,background:v?heatBg(v,maxCell*0.5):"transparent"}}>
+                                  {fmtVal(v)}
+                                </td>
+                              );
+                            })}
+                            <td style={{padding:"5px 10px",textAlign:"right",fontWeight:600,fontSize:11,background:"#F0F4F8",position:"sticky",right:0,borderLeft:"1px solid var(--border)"}}>
+                              {fmtVal(sTot)}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    : [];
+
+                  return [mainRow, ...subRows];
+                })}
+              </tbody>
+              <tfoot>
+                <tr style={{background:"#1A2A46",position:"sticky",bottom:0}}>
+                  <td style={{padding:"8px 12px",color:"#fff",fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:".4px",position:"sticky",left:0,background:"#1A2A46"}}>
+                    TOTAL GENERAL
+                  </td>
+                  {colKeys.map(ck=>{
+                    const colTot = filaKeys.reduce((s,fk)=>s+(tabla.get(fk)?.get(ck)||0),0);
+                    return (
+                      <td key={ck} style={{padding:"8px 10px",textAlign:"right",color:"rgba(255,255,255,.9)"}}>
+                        {fmtVal(colTot)}
+                      </td>
+                    );
+                  })}
+                  <td style={{padding:"8px 10px",textAlign:"right",color:"#D4AA3A",fontWeight:800,position:"sticky",right:0,background:"#0B1629"}}>
+                    {fmtVal(totalGlobal)}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Control de ración: la misma comparación que se podía ver dentro de
+// Análisis pivot (Categoría × Por pax·día × Volumen), pero como pantalla
+// propia en "Datos" — fija, sin los selectores de filas/columnas/métrica,
+// para no mezclarla con el pivot de uso general.
+function PageControlRacion() {
+  const [pedidos,    setPedidos]    = useState([]);
+  const [parametros, setParametros] = useState([]);
+  const [loading,    setLoading]    = useState(true);
+  const [error,      setError]      = useState(null);
+  const [filtBuque,  setFiltBuque]  = useState("");
+  const [filtEstado, setFiltEstado] = useState("");
+  const [filtDesde,  setFiltDesde]  = useState("");
+  const [filtHasta,  setFiltHasta]  = useState("");
+  const [busqueda,   setBusqueda]   = useState("");
+  const [expandidos, setExpandidos] = useState({});
+  //  Multi-selección de pedidos
+  const [seleccionados, setSeleccionados] = useState(new Set()); // Set de ids
+  const [modoSel, setModoSel] = useState(false); // false = todos los pedidos filtrados
+
+  useEffect(() => {
+    api.getPedidos({}).then(d => { setPedidos(d); setLoading(false); }).catch(e => { setError(e.message); setLoading(false); });
+  }, []);
+  useEffect(() => {
+    api.getParametros().then(setParametros).catch(e => console.error("No se pudieron cargar los parámetros de ración:", e.message));
+  }, []);
+  const paramPorCategoria = useMemo(() => Object.fromEntries(parametros.map(p => [p.grupo, p])), [parametros]);
+
+  const pedidosBase = useMemo(() => pedidos.filter(p => {
+    if (filtBuque  && p.base_buque !== filtBuque)  return false;
+    if (filtEstado && p.status     !== filtEstado)  return false;
+    if (filtDesde  && (p.fecha_pedido||"") < filtDesde) return false;
+    if (filtHasta  && (p.fecha_pedido||"") > filtHasta) return false;
+    return true;
+  }), [pedidos, filtBuque, filtEstado, filtDesde, filtHasta]);
+
+  // Si modoSel activo, solo los marcados; si no, todos los filtrados
+  const pedidosFilt = useMemo(() =>
+    modoSel && seleccionados.size > 0
+      ? pedidosBase.filter(p => seleccionados.has(p.id))
+      : pedidosBase,
+  [pedidosBase, modoSel, seleccionados]);
+
+  const buques  = useMemo(() => [...new Set(pedidos.map(p => p.base_buque).filter(Boolean))].sort(), [pedidos]);
+  const estados = useMemo(() => [...new Set(pedidos.map(p => p.status).filter(Boolean))].sort(), [pedidos]);
+
+  //  Motor: siempre Categoría (filas) × Pedido (columnas), en kg/L por persona·día
+  const { tabla, filaKeys, colKeys } = useMemo(() => {
+    const map = new Map();
+    const eventos = [];
+
+    pedidosFilt.forEach(p => {
+      const pax = p.pax || 1, dias = p.dias || 1, paxDias = pax * dias;
+      const colKey = `${(p.fecha_pedido||"—").slice(0,10)} · ${p.base_buque||"?"}`;
+
+      // Usamos lo AUTORIZADO por el comprador cuando ya está aprobado; si
+      // todavía no se aprobó, no hay autorizado y se usa lo pedido.
+      (p.viveres_pedido_items || []).filter(it => cantEfectiva(it) > 0).forEach(it => {
+        const valor = (cantEfectiva(it) * (it.volumen_peso||1)) / paxDias;
+        const filaKey = it.categoria || "Sin categoría";
+
+        if (busqueda && !filaKey.toLowerCase().includes(busqueda.toLowerCase()) &&
+            !(it.descripcion||"").toLowerCase().includes(busqueda.toLowerCase())) return;
+
+        if (!map.has(filaKey)) map.set(filaKey, new Map());
+        const row = map.get(filaKey);
+        row.set(colKey, (row.get(colKey)||0) + valor);
+        eventos.push({ filaKey, colKey, it, p, valor });
+      });
+    });
+
+    const filaKeys = [...map.keys()].sort((a,b) => {
+      const tA = [...map.get(a).values()].reduce((s,v)=>s+v,0);
+      const tB = [...map.get(b).values()].reduce((s,v)=>s+v,0);
+      return tB - tA;
+    });
+    const colSet = new Set(); eventos.forEach(e => colSet.add(e.colKey));
+    const colKeys = [...colSet].sort();
+    return { tabla: map, filaKeys, colKeys };
+  }, [pedidosFilt, busqueda]);
+
+  //  Desglose por ítem dentro de una categoría
+  const buildSubFilas = useCallback((fk) => {
+    const subMap = new Map();
+    pedidosFilt.forEach(p => {
+      const pax = p.pax||1, dias = p.dias||1, paxDias = pax*dias;
+      const colKey = `${(p.fecha_pedido||"—").slice(0,10)} · ${p.base_buque||"?"}`;
+      (p.viveres_pedido_items||[]).filter(it => cantEfectiva(it) > 0 && (it.categoria||"Sin categoría") === fk).forEach(it => {
+        const valor = (cantEfectiva(it) * (it.volumen_peso||1)) / paxDias;
+        const desc = it.descripcion || "—";
+        if (!subMap.has(desc)) subMap.set(desc, new Map());
+        subMap.get(desc).set(colKey, (subMap.get(desc).get(colKey)||0) + valor);
+      });
+    });
+    const subKeys = [...subMap.keys()].sort((a,b) => {
+      const tA = [...(subMap.get(a)?.values()||[])].reduce((s,v)=>s+v,0);
+      const tB = [...(subMap.get(b)?.values()||[])].reduce((s,v)=>s+v,0);
+      return tB - tA;
+    });
+    return { map: subMap, keys: subKeys };
+  }, [pedidosFilt]);
+
+  //  Helpers
+  const totalFila = (fk) => [...(tabla.get(fk)?.values()||[])].reduce((s,v)=>s+v,0);
+  const maxTotal  = useMemo(() => Math.max(1, ...filaKeys.map(f => totalFila(f))), [filaKeys, tabla]);
+  const maxCell   = useMemo(() => { let m=1; filaKeys.forEach(fk => colKeys.forEach(ck => { const v=tabla.get(fk)?.get(ck)||0; if(v>m) m=v; })); return m; }, [filaKeys,colKeys,tabla]);
+
+  const heatBg = (v, max) => {
+    if (!v) return "transparent";
+    const pct = Math.min(v/max, 1);
+    return `rgba(35,92,150,${0.07 + pct * 0.28})`;
+  };
+
+  const fmtVal = (v) => {
+    if (!v || v < 0.0001) return <span style={{ color:"var(--muted2)", fontSize:11 }}>—</span>;
+    const num  = v < 0.01 ? v.toFixed(4) : v < 10 ? v.toFixed(2) : v % 1 === 0 ? v.toFixed(0) : v.toFixed(1);
+    return <span style={{ fontFamily:"var(--mono)", fontSize:12, fontWeight:600 }}>{num}<span style={{ fontSize:9, color:"var(--muted)", marginLeft:1 }}>/p·d</span></span>;
+  };
+
+  const totalGlobal = filaKeys.reduce((s,f)=>s+totalFila(f),0);
+
+  if (loading) return <div className="state-empty">Cargando historial de pedidos...</div>;
+  if (error)   return <div className="state-empty" style={{color:"var(--danger)"}}>Error: {error}</div>;
+
+  return (
+    <div>
+      <div className="info-box accent" style={{marginBottom:14}}>
+        Compara lo pedido (autorizado si el pedido ya está aprobado) contra el objetivo de <strong>Ración por persona/día</strong>, en kg/L por persona y día. Lo que supera el máximo se resalta en rojo — es un aviso para redefinir cantidades, no bloquea nada.
+      </div>
+
+      {/*  Selector de pedidos  */}
+      <div className="card" style={{marginBottom:14}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom: modoSel ? 10 : 0}}>
+          <div style={{fontWeight:700,fontSize:13,color:"var(--navy)"}}>
+             Pedidos a analizar
+            <span style={{fontWeight:400,fontSize:11,color:"var(--muted)",marginLeft:8}}>
+              {modoSel && seleccionados.size > 0
+                ? `${seleccionados.size} pedido${seleccionados.size>1?"s":""} seleccionado${seleccionados.size>1?"s":""}`
+                : `${pedidosBase.length} pedido${pedidosBase.length!==1?"s":""} (todos los filtrados)`}
+            </span>
+          </div>
+          <div style={{display:"flex",gap:6}}>
+            {modoSel && seleccionados.size > 0 &&
+              <button className="btn btn-ghost btn-sm" onClick={()=>setSeleccionados(new Set())}>Limpiar selección</button>
+            }
+            <button
+              className={`btn btn-sm ${modoSel ? "btn-primary" : "btn-ghost"}`}
+              onClick={()=>{ setModoSel(v=>!v); if(modoSel) setSeleccionados(new Set()); }}
+            >
+              {modoSel ? "✓ Selección activa" : "Seleccionar pedidos"}
+            </button>
+          </div>
+        </div>
+
+        {modoSel && (
+          <div>
+            <div style={{display:"flex",gap:6,marginBottom:8}}>
+              <button className="btn btn-ghost btn-sm" onClick={()=>setSeleccionados(new Set(pedidosBase.map(p=>p.id)))}>Seleccionar todos</button>
+              <button className="btn btn-ghost btn-sm" onClick={()=>setSeleccionados(new Set())}>Deseleccionar todos</button>
+            </div>
+            <div style={{maxHeight:220,overflowY:"auto",display:"flex",flexDirection:"column",gap:4}}>
+              {pedidosBase.map(p => {
+                const checked = seleccionados.has(p.id);
+                const itemsCnt = (p.viveres_pedido_items||[]).filter(it=>(it.cantidad_pedida||0)>0).length;
+                return (
+                  <label key={p.id} style={{display:"flex",alignItems:"center",gap:10,padding:"7px 10px",borderRadius:6,border:`1px solid ${checked?"var(--accent)":"var(--border)"}`,background:checked?"#EFF6FF":"var(--surface)",cursor:"pointer",transition:"all .12s"}}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={()=>setSeleccionados(prev=>{
+                        const next = new Set(prev);
+                        checked ? next.delete(p.id) : next.add(p.id);
+                        return next;
+                      })}
+                      style={{width:"auto",accentColor:"var(--accent)"}}
+                    />
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                        <span style={{fontWeight:600,fontSize:12}}>{p.base_buque || "Sin buque"}</span>
+                        <span style={{fontSize:11,color:"var(--muted)",fontFamily:"var(--mono)"}}>{(p.fecha_pedido||"").slice(0,10)}</span>
+                        <span style={{fontSize:10,padding:"1px 6px",borderRadius:4,background:"#DBEAFE",color:"#1E40AF",fontWeight:600}}>{p.pax} PAX · {p.dias} días</span>
+                        {p.solicitado_por && <span style={{fontSize:10,color:"var(--muted)"}}>{p.solicitado_por}</span>}
+                      </div>
+                    </div>
+                    <span style={{fontSize:10,color:"var(--muted)",whiteSpace:"nowrap"}}>{itemsCnt} ítems</span>
+                  </label>
+                );
+              })}
+              {pedidosBase.length === 0 && <div style={{fontSize:12,color:"var(--muted)",padding:"8px 0"}}>Sin pedidos para los filtros actuales</div>}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Filtros */}
+      <div className="filter-row" style={{marginBottom:14}}>
+        <select value={filtBuque} onChange={e=>setFiltBuque(e.target.value)} style={{minWidth:160}}>
+          <option value="">Todos los buques</option>
+          {buques.map(b=><option key={b}>{b}</option>)}
+        </select>
+        <select value={filtEstado} onChange={e=>setFiltEstado(e.target.value)} style={{minWidth:140}}>
+          <option value="">Todos los estados</option>
+          {estados.map(s=><option key={s}>{s}</option>)}
+        </select>
+        <input type="date" value={filtDesde} onChange={e=>setFiltDesde(e.target.value)} style={{width:140}} />
+        <span style={{fontSize:11,color:"var(--muted)"}}>→</span>
+        <input type="date" value={filtHasta} onChange={e=>setFiltHasta(e.target.value)} style={{width:140}} />
+        <input value={busqueda} onChange={e=>setBusqueda(e.target.value)} placeholder="Buscar ítem / categoría..." style={{flex:1,minWidth:160}} />
+        {(filtBuque||filtEstado||filtDesde||filtHasta||busqueda) && (
+          <button className="btn btn-ghost btn-sm" onClick={()=>{setFiltBuque("");setFiltEstado("");setFiltDesde("");setFiltHasta("");setBusqueda("");}}>✕ Limpiar</button>
+        )}
+      </div>
+
+      {/* KPIs rápidos */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:14}}>
+        {[
+          {l:"Pedidos",       v:pedidosFilt.length},
+          {l:"Categorías",    v:filaKeys.length},
+          {l:"Columnas",      v:colKeys.length},
+          {l:"Con objetivo definido", v:`${filaKeys.filter(fk=>paramPorCategoria[fk]).length}/${filaKeys.length}`},
+        ].map(k=>(
+          <div key={k.l} className="card" style={{padding:"10px 14px"}}>
+            <div style={{fontSize:10,color:"var(--muted)",fontWeight:700,textTransform:"uppercase",letterSpacing:".5px",marginBottom:3}}>{k.l}</div>
+            <div style={{fontSize:20,fontWeight:800,fontFamily:"var(--mono)",color:"var(--navy)"}}>{k.v}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Tabla */}
+      {filaKeys.length === 0
+        ? <div className="state-empty">Sin datos para los filtros seleccionados</div>
+        : (
+        <div className="card">
+          <div className="card-title" style={{fontSize:12}}>
+            Categoría
+            <span style={{fontWeight:400,color:"var(--muted)",margin:"0 6px"}}>×</span>
+            Pedido
+            <span style={{fontWeight:400,color:"var(--muted)",fontSize:11,marginLeft:8}}>· kg/L por persona·día</span>
+            <span style={{fontWeight:400,color:"var(--muted2)",fontSize:10,marginLeft:8}}>({filaKeys.length} filas · {colKeys.length} col.)</span>
+          </div>
+          <div className="table-wrap" style={{maxHeight:580,overflowX:"auto",overflowY:"auto"}}>
+            <table style={{borderCollapse:"collapse",fontSize:12,minWidth:"100%"}}>
+              <thead>
+                <tr style={{position:"sticky",top:0,zIndex:4}}>
+                  <th style={{minWidth:220,textAlign:"left",padding:"8px 12px",background:"#1A2A46",color:"#fff",fontWeight:700,fontSize:11,letterSpacing:".4px",textTransform:"uppercase",position:"sticky",left:0,zIndex:5}}>
+                    Categoría
+                  </th>
+                  {colKeys.map(ck=>(
+                    <th key={ck} title={ck} style={{minWidth:120,textAlign:"right",padding:"8px 10px",background:"#1A2A46",color:"rgba(255,255,255,.7)",fontWeight:600,fontSize:10,letterSpacing:".3px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:150}}>
+                      {ck.length>18?ck.slice(0,18)+"…":ck}
+                    </th>
+                  ))}
+                  <th style={{minWidth:100,textAlign:"right",padding:"8px 10px",background:"#0B1629",color:"var(--gold-light,#D4AA3A)",fontWeight:800,fontSize:11,letterSpacing:".4px",textTransform:"uppercase",position:"sticky",right:0}}>
+                    TOTAL
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {filaKeys.flatMap(fk => {
+                  const tot = totalFila(fk);
+                  const barPct = Math.min(tot/maxTotal, 1);
+                  const isExp = !!expandidos[fk];
+                  const subData = isExp ? buildSubFilas(fk) : null;
+                  const objetivo = paramPorCategoria[fk];
+
+                  const mainRow = (
+                    <tr
+                      key={fk}
+                      style={{cursor:"pointer", borderBottom:"1px solid var(--border)"}}
+                      onClick={()=>setExpandidos(prev=>({...prev,[fk]:!prev[fk]}))}
+                    >
+                      <td style={{padding:"8px 12px",background:"var(--surface)",position:"sticky",left:0,zIndex:2,borderRight:"1px solid var(--border)"}}>
+                        <div style={{display:"flex",alignItems:"center",gap:7}}>
+                          <span style={{color:"var(--muted2)",fontSize:10,width:10,flexShrink:0}}>{isExp?"":""}</span>
+                          <div style={{flex:1,minWidth:0}}>
+                            <div style={{fontWeight:600,fontSize:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{fk}</div>
+                            {objetivo && (
+                              <div style={{fontSize:9,color:"var(--muted)",fontFamily:"var(--mono)",marginTop:1}}>
+                                Objetivo {objetivo.min}–{objetivo.max} {objetivo.unidad_medida}/p·d
+                              </div>
+                            )}
+                            <div style={{marginTop:3,height:2,borderRadius:1,background:"var(--border)"}}>
+                              <div style={{height:"100%",width:`${barPct*100}%`,background:"var(--accent)",borderRadius:1}}/>
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+                      {colKeys.map(ck => {
+                        const v = tabla.get(fk)?.get(ck)||0;
+                        const excede = objetivo?.max != null && v > objetivo.max;
+                        return (
+                          <td
+                            key={ck}
+                            title={excede ? `Supera el objetivo de ${objetivo.max} ${objetivo.unidad_medida}/persona/día` : undefined}
+                            style={{
+                              padding:"7px 10px",textAlign:"right",
+                              background: excede ? "rgba(220,38,38,.14)" : heatBg(v,maxCell),
+                              borderBottom:"1px solid var(--border)",
+                              boxShadow: excede ? "inset 3px 0 0 var(--danger)" : "none",
+                            }}
+                          >
+                            {excede && <span style={{color:"var(--danger)",fontWeight:700,marginRight:3}}>▲</span>}
                             {fmtVal(v)}
                           </td>
                         );
@@ -3284,6 +3885,8 @@ function ViveresApp({ session }) {
     catalogo:  { grupo: "Datos",       titulo: "Catálogo de víveres",  sub: "Artículos habilitados, con unidad, rubro y precio de referencia." },
     solicitantes: { grupo: "Datos",    titulo: "Solicitantes",         sub: "Nombres habilitados para crear pedidos. Estandarizá quién puede solicitar víveres." },
     pivot:     { grupo: "Datos",       titulo: "Análisis pivot",       sub: "Consumo y costo cruzados por embarcación, rubro y período." },
+    control_racion: { grupo: "Datos",  titulo: "Control de ración",    sub: "Lo pedido por persona y día, por categoría, contra el objetivo de Ración por persona/día." },
+    parametros_dieta: { grupo: "Datos", titulo: "Ración por persona/día", sub: "Mínimo y máximo orientativo por categoría, para avisar si un pedido pide de más o de menos." },
   };
 
   const NAV = [
@@ -3302,6 +3905,8 @@ function ViveresApp({ session }) {
       { id: "catalogo",     icon: "box",   label: "Catálogo",       count: 0 },
       { id: "solicitantes", icon: "users", label: "Solicitantes",   count: 0 },
       { id: "pivot",        icon: "grid",  label: "Análisis pivot", count: 0 },
+      { id: "control_racion", icon: "grid", label: "Control de ración", count: 0 },
+      { id: "parametros_dieta", icon: "grid", label: "Ración por persona/día", count: 0 },
     ]},
   ];
 
@@ -3404,6 +4009,8 @@ function ViveresApp({ session }) {
             {page === "catalogo"  && <PageCatalogo notify={notify} />}
             {page === "solicitantes" && <PageSolicitantes notify={notify} />}
             {page === "pivot"     && <PagePivot />}
+            {page === "control_racion" && <PageControlRacion />}
+            {page === "parametros_dieta" && <PageParametrosDieta notify={notify} userEmail={userEmail} />}
           </div>
         </div>
       </div>

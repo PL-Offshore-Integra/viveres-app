@@ -36,43 +36,7 @@ const fmtDate = d => d ? new Date(d).toLocaleDateString("es-AR") : "—";
 // compra/entrega" hay que usar esta cantidad efectiva.
 const cantEfectiva = (it) => (it?.cantidad_autorizada != null ? it.cantidad_autorizada : (it?.cantidad_pedida || 0));
 
-// Calcula el stock actual por catalogo_id a partir de un registro de "stock
-// vuelta a puerto" (usa el stock verificado por Nicolás si existe, si no el
-// cargado originalmente por el solicitante), sumando lo que llegó a bordo por
-// pedidos ya entregados y restando todo lo consumido en "Movimiento stock en
-// puerto" — ambos desde la fecha de ese registro en adelante. Es la fuente
-// única de verdad para el stock a bordo: la usan Nuevo Pedido (para prellenar
-// el stock inicial), Movimiento stock en puerto (para mostrar cuánto queda
-// antes de cargar el consumo del día) y la revisión/aprobación de pedidos.
-function stockActualPorCatalogo(registroVuelta, movimientos = [], pedidosEntregados = []) {
-  const resultado = {};
-  if (!registroVuelta) return resultado;
-  (registroVuelta.viveres_stock_vuelta_items || []).forEach(it => {
-    if (!it.catalogo_id) return;
-    resultado[it.catalogo_id] = it.stock_verificado != null ? it.stock_verificado : (it.stock || 0);
-  });
-  movimientos
-    .filter(m => m.base_buque === registroVuelta.base_buque && new Date(m.fecha) >= new Date(registroVuelta.fecha))
-    .forEach(m => (m.viveres_movimiento_stock_items || []).forEach(it => {
-      if (!it.catalogo_id || resultado[it.catalogo_id] === undefined) return;
-      resultado[it.catalogo_id] = Math.max(0, resultado[it.catalogo_id] - (it.cantidad_consumida || 0));
-    }));
-  // Pedidos ya marcados "entregado" desde la vuelta a puerto en adelante: lo
-  // que llega a bordo se suma al stock, usando la cantidad autorizada por el
-  // comprador (o la pedida, si nunca se ajustó).
-  pedidosEntregados
-    .filter(p => p.base_buque === registroVuelta.base_buque && p.fecha_entrega
-      && new Date(p.fecha_entrega) >= new Date(registroVuelta.fecha))
-    .forEach(p => (p.viveres_pedido_items || []).forEach(it => {
-      if (!it.catalogo_id) return;
-      const cant = cantEfectiva(it);
-      if (!cant) return;
-      resultado[it.catalogo_id] = (resultado[it.catalogo_id] || 0) + cant;
-    }));
-  return resultado;
-}
-
-//  API
+//  API 
 const api = {
   async getCatalogo() {
     const { data, error } = await supabase.from("viveres_catalogo").select("*").eq("activo", true).order("categoria").order("descripcion");
@@ -83,22 +47,6 @@ const api = {
     const { data, error } = await supabase.from("viveres_parametros_dieta").select("*");
     if (error) throw error;
     return data || [];
-  },
-  async getCategoriasValidas() {
-    const { data, error } = await supabase.from("viveres_categorias").select("*").order("orden");
-    if (error) throw error;
-    return data || [];
-  },
-  async guardarParametro(grupo, min, max, unidad) {
-    // upsert por grupo (para edición desde el Dashboard)
-    const { data: exist } = await supabase.from("viveres_parametros_dieta").select("id").eq("grupo", grupo).maybeSingle();
-    if (exist) {
-      const { error } = await supabase.from("viveres_parametros_dieta").update({ min, max, unidad_medida: unidad }).eq("id", exist.id);
-      if (error) throw error;
-    } else {
-      const { error } = await supabase.from("viveres_parametros_dieta").insert([{ grupo, min, max, unidad_medida: unidad }]);
-      if (error) throw error;
-    }
   },
   async getPedidos(filtros = {}) {
     let q = supabase.from("viveres_pedidos").select("*, viveres_pedido_items(*)").order("created_at", { ascending: false });
@@ -673,7 +621,7 @@ function exportarParaProveedor(pedido, items) {
 }
 
 //  FORM PEDIDO 
-function FormPedido({ pedidoInicial, catalogoInicial, parametros, solicitantes = [], stockVuelta = [], movimientosStock = [], pedidosEntregados = [], onSave, onCancel, notify }) {
+function FormPedido({ pedidoInicial, catalogoInicial, parametros, solicitantes = [], stockVuelta = [], onSave, onCancel, notify }) {
   const [step, setStep] = useState(1);
   const [catalogo] = useState(catalogoInicial || []);
   const [saving, setSaving] = useState(false);
@@ -720,17 +668,14 @@ function FormPedido({ pedidoInicial, catalogoInicial, parametros, solicitantes =
     if (pedidoInicial) return; // en edición de un pedido existente no tocamos lo ya cargado
     if (!registroStockVuelta) return;
     if (stockEditadoManualmente.current) return;
-    // Punto de partida = stock de "vuelta a puerto" (verificado si Nicolás lo
-    // cargó) menos todo lo consumido a bordo desde esa fecha en "Movimiento
-    // stock en puerto". Así el pedido arranca con el stock real, no con la
-    // foto vieja del día que el buque volvió a puerto.
-    const stockPorCatalogo = stockActualPorCatalogo(registroStockVuelta, movimientosStock, pedidosEntregados);
+    const stockPorCatalogo = {};
+    (registroStockVuelta.viveres_stock_vuelta_items || []).forEach(it => {
+      if (it.catalogo_id) stockPorCatalogo[it.catalogo_id] = it.stock;
+    });
     setItems(prev => prev.map(it => stockPorCatalogo[it.catalogo_id] !== undefined ? { ...it, stock_actual: stockPorCatalogo[it.catalogo_id] } : it));
-    const consumoRegistrado = movimientosStock.some(m => m.base_buque === registroStockVuelta.base_buque && new Date(m.fecha) >= new Date(registroStockVuelta.fecha));
-    const entregasRegistradas = pedidosEntregados.some(p => p.base_buque === registroStockVuelta.base_buque && p.fecha_entrega && new Date(p.fecha_entrega) >= new Date(registroStockVuelta.fecha));
-    notify(`Stock a bordo completado con el registro de vuelta a puerto del ${fmtDate(registroStockVuelta.fecha)}${consumoRegistrado ? " y el consumo diario registrado desde entonces" : ""}${entregasRegistradas ? " y los pedidos ya entregados" : ""}`, "info");
+    notify(`Stock a bordo completado con el registro de vuelta a puerto del ${fmtDate(registroStockVuelta.fecha)}`, "info");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [registroStockVuelta, movimientosStock, pedidosEntregados]);
+  }, [registroStockVuelta]);
 
   const paxDias = (cabecera.pax || 0) * (cabecera.dias || 0);
   const todosItems = [...items, ...itemsManuales];
@@ -773,7 +718,7 @@ function FormPedido({ pedidoInicial, catalogoInicial, parametros, solicitantes =
       {cabecera.pax > 0 && cabecera.dias > 0 && <div className="info-box accent mt12" style={{ fontSize: 12 }}>Total: <strong>{cabecera.pax} PAX × {cabecera.dias} días = {paxDias} raciones</strong></div>}
       {registroStockVuelta && (
         <div className="info-box accent mt12" style={{ fontSize: 12 }}>
-          Hay un registro de <strong>stock a la vuelta a puerto</strong> del <strong>{fmtDate(registroStockVuelta.fecha)}</strong> para {cabecera.base_buque}. Se va a usar como stock a bordo inicial en el paso siguiente, descontando el consumo diario cargado en <strong>Movimiento stock en puerto</strong> desde esa fecha (podés editarlo ítem por ítem).
+          Hay un registro de <strong>stock a la vuelta a puerto</strong> del <strong>{fmtDate(registroStockVuelta.fecha)}</strong> para {cabecera.base_buque}. Se va a usar como stock a bordo inicial en el paso siguiente (podés editarlo ítem por ítem).
         </div>
       )}
       <div className="form-footer-actions mt16">
@@ -934,14 +879,11 @@ function PageNuevo({ notify, onSaved, onCancel }) {
   const [parametros, setParametros] = useState([]);
   const [solicitantes, setSolicitantes] = useState([]);
   const [stockVuelta, setStockVuelta] = useState([]);
-  const [movimientosStock, setMovimientosStock] = useState([]);
-  const [pedidosEntregados, setPedidosEntregados] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
-    // getStockVuelta(), getMovimientosStock() y los pedidos entregados se
-    // cargan aparte: si esas consultas fallan (tablas nuevas de Supabase con
-    // algún problema, por ejemplo), no queremos que se caiga el catálogo ni
-    // los solicitantes, que son imprescindibles para armar el pedido.
+    // getStockVuelta() se carga aparte: si esa consulta falla (tablas nuevas de
+    // Supabase con algún problema, por ejemplo), no queremos que se caiga el
+    // catálogo ni los solicitantes, que son imprescindibles para armar el pedido.
     Promise.all([api.getCatalogo(), api.getParametros(), api.getSolicitantes()])
       .then(([cat, par, sol]) => { setCatalogo(cat); setParametros(par); setSolicitantes(sol); })
       .catch(e => notify("Error al cargar datos: " + e.message, "error"))
@@ -949,15 +891,9 @@ function PageNuevo({ notify, onSaved, onCancel }) {
     api.getStockVuelta()
       .then(sv => setStockVuelta(sv))
       .catch(e => console.error("No se pudo cargar el historial de stock vuelta a puerto:", e.message));
-    api.getMovimientosStock()
-      .then(mv => setMovimientosStock(mv))
-      .catch(e => console.error("No se pudo cargar el historial de movimiento de stock en puerto:", e.message));
-    api.getPedidos({ status: "aprobado" })
-      .then(ps => setPedidosEntregados(ps.filter(p => p.tracker_status === "entregado")))
-      .catch(e => console.error("No se pudo cargar los pedidos entregados:", e.message));
   }, [notify]);
   if (loading) return <div className="loading"><span className="spin">◌</span> Cargando catálogo...</div>;
-  return <FormPedido catalogoInicial={catalogo} parametros={parametros} solicitantes={solicitantes} stockVuelta={stockVuelta} movimientosStock={movimientosStock} pedidosEntregados={pedidosEntregados} onSave={async (cab, items) => { await api.crearPedido(cab, items); onSaved(); }} onCancel={onCancel} notify={notify} />;
+  return <FormPedido catalogoInicial={catalogo} parametros={parametros} solicitantes={solicitantes} stockVuelta={stockVuelta} onSave={async (cab, items) => { await api.crearPedido(cab, items); onSaved(); }} onCancel={onCancel} notify={notify} />;
 }
 
 //  MODAL: REVISAR PEDIDO 
@@ -968,8 +904,6 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
   const [saving, setSaving] = useState(false);
   const [itemsEdit, setItemsEdit] = useState([]);
   const [aprobadoPor, setAprobadoPor] = useState("");
-  const [stockActualDict, setStockActualDict] = useState({});
-  const [stockCargando, setStockCargando] = useState(true);
 
   useEffect(() => {
     // cantidad_pedida (lo que cargó el requisitor) nunca se toca acá.
@@ -981,22 +915,6 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
     setItemsEdit(raw);
     setLoading(false);
   }, [pedido]);
-
-  // Stock actual en vivo (vuelta a puerto − consumo diario cargado en
-  // Movimiento stock en puerto), para que quien aprueba vea cuánto queda
-  // realmente a bordo, no solo lo que se cargó al armar el pedido.
-  useEffect(() => {
-    setStockCargando(true);
-    Promise.all([api.getStockVuelta(), api.getMovimientosStock(), api.getPedidos({ status: "aprobado" })])
-      .then(([sv, mv, ped]) => {
-        const registro = sv.filter(r => r.base_buque === pedido.base_buque)
-          .sort((a, b) => new Date(b.fecha) - new Date(a.fecha))[0] || null;
-        const entregados = ped.filter(p => p.tracker_status === "entregado");
-        setStockActualDict(stockActualPorCatalogo(registro, mv, entregados));
-      })
-      .catch(e => console.error("No se pudo calcular el stock actual:", e.message))
-      .finally(() => setStockCargando(false));
-  }, [pedido.base_buque]);
 
   const itemsVisibles = itemsEdit.filter(it => !it._eliminado);
   const huboCambios = itemsEdit.some(
@@ -1116,10 +1034,6 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
                 </div>
               )}
 
-              <div className="info-box accent mb12" style={{ fontSize: 11 }}>
-                <strong>Stock actual</strong> = lo cargado en la última vuelta a puerto de este barco, menos el consumo diario registrado en Movimiento stock en puerto, más lo ya entregado de pedidos aprobados. Usalo como referencia para ajustar la cantidad aprobada.
-              </div>
-
               <div className="table-wrap">
                 <table className="items-edit">
                   <thead>
@@ -1128,7 +1042,6 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
                       <th>Temp.</th>
                       <th>Descripción</th>
                       <th>Unidad</th>
-                      <th style={{ width: 80, textAlign: "right" }}>Stock actual</th>
                       <th style={{ width: 90, textAlign: "right" }}>Cant. original</th>
                       <th style={{ width: 120, textAlign: "right" }}>Cant. aprobada</th>
                       <th style={{ width: 32 }}></th>
@@ -1137,16 +1050,11 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
                   <tbody>
                     {itemsEdit.length === 0 ? (
                       <tr>
-                        <td colSpan={8} style={{ textAlign: "center", padding: 24, color: "var(--muted2)" }}>Sin ítems pedidos</td>
+                        <td colSpan={7} style={{ textAlign: "center", padding: 24, color: "var(--muted2)" }}>Sin ítems pedidos</td>
                       </tr>
                     ) : (
                       itemsEdit.map(it => {
                         const modificado = !it._eliminado && it.cantidad_autorizada !== it.cantidad_pedida;
-                        // Preferimos el stock actual calculado en vivo; si el ítem no está
-                        // linkeado al catálogo (ingreso manual) o no hay dato, mostramos el
-                        // que se guardó al armar el pedido.
-                        const stockLive = it.catalogo_id != null ? stockActualDict[it.catalogo_id] : undefined;
-                        const stockAMostrar = stockLive !== undefined ? stockLive : it.stock_actual;
                         return (
                           <tr
                             key={it.id}
@@ -1166,10 +1074,6 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
                               {it.descripcion}
                             </td>
                             <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.unidad}</td>
-                            {/* Stock actual — vuelta a puerto menos consumo diario, calculado en vivo */}
-                            <td className="text-mono" style={{ fontSize: 12, textAlign: "right", color: stockAMostrar > 0 ? "var(--navy)" : "var(--muted2)" }}>
-                              {stockCargando ? "…" : (stockAMostrar != null ? fmt(stockAMostrar) : "—")}
-                            </td>
                             {/* Cantidad original — lo que cargó el requisitor, fijo, no se toca */}
                             <td style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--muted)", textAlign: "right" }}>
                               {it.cantidad_pedida}
@@ -1435,257 +1339,6 @@ function ModalTrackerEditar({ pedido, onClose, onSave, notify }) {
 }
 
 //  PAGE: TRACKER 
-function PageDashboardConsumo({ notify }) {
-  const [pedidos, setPedidos] = useState([]);
-  const [parametros, setParametros] = useState([]);
-  const [catalogo, setCatalogo] = useState([]);
-  const [categorias, setCategorias] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [buque, setBuque] = useState("todos");
-  const [desde, setDesde] = useState("");
-  const [hasta, setHasta] = useState("");
-  const [editParam, setEditParam] = useState(null);
-  const [savingParam, setSavingParam] = useState(false);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [ped, par, cat, cats] = await Promise.all([
-        api.getPedidos({ statuses: ["aprobado", "enviado", "en_camino", "entregado"] }),
-        api.getParametros(),
-        api.getCatalogo(),
-        api.getCategoriasValidas(),
-      ]);
-      setPedidos(ped);
-      setParametros(par);
-      setCatalogo(cat);
-      setCategorias(cats);
-    } catch (e) {
-      notify("Error al cargar el dashboard: " + e.message, "error");
-    } finally {
-      setLoading(false);
-    }
-  }, [notify]);
-  useEffect(() => { load(); }, [load]);
-
-  // mapa categoria -> es_comida
-  const esComida = useMemo(() => {
-    const m = {};
-    categorias.forEach(c => { m[c.nombre] = c.es_comida; });
-    return m;
-  }, [categorias]);
-
-  // mapa grupo dieta -> {min,max,unidad}
-  const dieta = useMemo(() => {
-    const m = {};
-    parametros.forEach(p => { m[p.grupo] = { min: Number(p.min), max: Number(p.max), unidad: p.unidad_medida }; });
-    return m;
-  }, [parametros]);
-
-  // pedidos filtrados por buque y fecha (usa fecha_necesaria como fecha de entrega/consumo)
-  const pedidosFiltrados = useMemo(() => {
-    return pedidos.filter(p => {
-      if (buque !== "todos" && p.base_buque !== buque) return false;
-      const f = p.fecha_necesaria || p.fecha_pedido;
-      if (desde && f && f < desde) return false;
-      if (hasta && f && f > hasta) return false;
-      return true;
-    });
-  }, [pedidos, buque, desde, hasta]);
-
-  // agregación por categoría: real (lo pedido/entregado, normalizado a kg via volumen_peso)
-  // y teórico (banda x pax x dias) para las categorías que tienen grupo de dieta
-  const analisis = useMemo(() => {
-    // real por categoría
-    const realCat = {};
-    let totalPaxDias = 0;
-    const paxDiasPorBuque = {};
-
-    pedidosFiltrados.forEach(p => {
-      const paxDias = (Number(p.pax) || 0) * (Number(p.dias) || 0);
-      totalPaxDias += paxDias;
-      (p.viveres_pedido_items || []).forEach(it => {
-        const cat = it.categoria || "Otro";
-        const cant = cantEfectiva(it) * (Number(it.volumen_peso) || 1); // normalizado a unidad_analisis (kg/l)
-        realCat[cat] = (realCat[cat] || 0) + cant;
-      });
-    });
-
-    // teórico por categoría = banda × paxDias (para categorías cuyo nombre coincide con un grupo de dieta)
-    const filas = [];
-    const cats = [...new Set([...Object.keys(realCat), ...Object.keys(dieta)])];
-    cats.forEach(cat => {
-      if (esComida[cat] === false) return; // saltear no-comida
-      const real = realCat[cat] || 0;
-      const banda = dieta[cat];
-      let teoMin = null, teoMax = null;
-      if (banda) {
-        teoMin = banda.min * totalPaxDias;
-        teoMax = banda.max * totalPaxDias;
-      }
-      filas.push({ categoria: cat, real, teoMin, teoMax, unidad: banda?.unidad || "Kg", tieneBanda: !!banda });
-    });
-    filas.sort((a, b) => b.real - a.real);
-    return { filas, totalPaxDias };
-  }, [pedidosFiltrados, dieta, esComida]);
-
-  // serie temporal: real por fecha (para telemetría)
-  const serie = useMemo(() => {
-    const porFecha = {};
-    pedidosFiltrados.forEach(p => {
-      const f = (p.fecha_necesaria || p.fecha_pedido || "").slice(0, 10);
-      if (!f) return;
-      const paxDias = (Number(p.pax) || 0) * (Number(p.dias) || 0);
-      let kg = 0;
-      (p.viveres_pedido_items || []).forEach(it => {
-        if (esComida[it.categoria] === false) return;
-        kg += cantEfectiva(it) * (Number(it.volumen_peso) || 1);
-      });
-      if (!porFecha[f]) porFecha[f] = { fecha: f, kg: 0, paxDias: 0 };
-      porFecha[f].kg += kg;
-      porFecha[f].paxDias += paxDias;
-    });
-    return Object.values(porFecha)
-      .map(x => ({ ...x, gPorPaxDia: x.paxDias ? (x.kg * 1000) / x.paxDias : 0 }))
-      .sort((a, b) => a.fecha < b.fecha ? -1 : 1);
-  }, [pedidosFiltrados, esComida]);
-
-  const guardarParam = async () => {
-    if (!editParam) return;
-    const min = parseFloat(editParam.min), max = parseFloat(editParam.max);
-    if (isNaN(min) || isNaN(max)) { notify("Min y max deben ser números", "error"); return; }
-    if (min > max) { notify("El mínimo no puede ser mayor al máximo", "error"); return; }
-    setSavingParam(true);
-    try {
-      await api.guardarParametro(editParam.grupo, min, max, editParam.unidad || "Kg");
-      notify(`Parámetro de ${editParam.grupo} actualizado`, "success");
-      setEditParam(null);
-      await load();
-    } catch (e) {
-      notify("Error: " + e.message, "error");
-    } finally {
-      setSavingParam(false);
-    }
-  };
-
-  if (loading) return <div className="card"><div style={{ textAlign: "center", padding: 40, color: "var(--muted)" }}>Cargando…</div></div>;
-
-  const totalReal = analisis.filas.reduce((s, f) => s + f.real, 0);
-  const buquesConDatos = [...new Set(pedidos.map(p => p.base_buque))].filter(Boolean);
-
-  // telemetría SVG
-  const chart = (() => {
-    if (!serie.length) return <div style={{ padding: 24, textAlign: "center", color: "var(--muted2)", fontSize: 13 }}>Sin datos en el rango.</div>;
-    const W = 900, H = 220, pad = { l: 44, r: 14, t: 14, b: 30 };
-    const maxY = Math.max(...serie.map(s => s.gPorPaxDia), 10) * 1.1;
-    const X = i => pad.l + (serie.length <= 1 ? 0 : (i / (serie.length - 1)) * (W - pad.l - pad.r));
-    const Y = v => H - pad.b - (v / maxY) * (H - pad.t - pad.b);
-    const pts = serie.map((s, i) => `${X(i)},${Y(s.gPorPaxDia)}`).join(" ");
-    let gy = [];
-    for (let k = 0; k <= 4; k++) { const v = maxY * k / 4, y = Y(v); gy.push(<g key={k}><line x1={pad.l} y1={y} x2={W - pad.r} y2={y} stroke="#E4E8EC" /><text x={pad.l - 6} y={y + 3} textAnchor="end" fontSize="10" fill="#8A94A0">{Math.round(v)}</text></g>); }
-    const step = Math.ceil(serie.length / 8);
-    const gx = serie.map((s, i) => (i % step === 0 || i === serie.length - 1) ? <text key={i} x={X(i)} y={H - pad.b + 15} textAnchor="middle" fontSize="9" fill="#8A94A0">{s.fecha.slice(5)}</text> : null);
-    const dots = serie.map((s, i) => <circle key={i} cx={X(i)} cy={Y(s.gPorPaxDia)} r="2.5" fill="var(--accent)"><title>{s.fecha}: {Math.round(s.gPorPaxDia)} g/pax·día</title></circle>);
-    return (
-      <div style={{ overflowX: "auto" }}>
-        <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", minWidth: 560, height: H }}>
-          {gy}{gx}
-          <polyline points={pts} fill="none" stroke="var(--accent)" strokeWidth="2" />
-          {dots}
-          <text x={pad.l} y="10" fontSize="10" fill="var(--muted)">g / pax·día (comida)</text>
-        </svg>
-      </div>
-    );
-  })();
-
-  return (
-    <div>
-      {/* Filtros */}
-      <div className="card">
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
-          <FG label="Embarcación">
-            <select value={buque} onChange={e => setBuque(e.target.value)}>
-              <option value="todos">Todas</option>
-              {buquesConDatos.map(b => <option key={b} value={b}>{b}</option>)}
-            </select>
-          </FG>
-          <FG label="Desde"><input type="date" value={desde} onChange={e => setDesde(e.target.value)} /></FG>
-          <FG label="Hasta"><input type="date" value={hasta} onChange={e => setHasta(e.target.value)} /></FG>
-          {(desde || hasta || buque !== "todos") && <button className="btn btn-ghost btn-sm" onClick={() => { setBuque("todos"); setDesde(""); setHasta(""); }} style={{ height: 34 }}>Limpiar</button>}
-          <div style={{ marginLeft: "auto", fontSize: 12, color: "var(--muted)" }}>{pedidosFiltrados.length} pedidos · {analisis.totalPaxDias} raciones (pax×días)</div>
-        </div>
-      </div>
-
-      {/* KPIs */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12, marginBottom: 16 }}>
-        <div className="card" style={{ margin: 0 }}><div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--muted)", fontFamily: "var(--mono)" }}>Raciones (pax×días)</div><div style={{ fontSize: 26, fontWeight: 700, color: "var(--navy)", marginTop: 4 }}>{analisis.totalPaxDias}</div></div>
-        <div className="card" style={{ margin: 0 }}><div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--muted)", fontFamily: "var(--mono)" }}>Total comida (real)</div><div style={{ fontSize: 26, fontWeight: 700, color: "var(--navy)", marginTop: 4 }}>{totalReal.toFixed(0)} <span style={{ fontSize: 14, color: "var(--muted)" }}>kg</span></div></div>
-        <div className="card" style={{ margin: 0 }}><div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--muted)", fontFamily: "var(--mono)" }}>g / pax·día (real)</div><div style={{ fontSize: 26, fontWeight: 700, color: "var(--navy)", marginTop: 4 }}>{analisis.totalPaxDias ? Math.round(totalReal * 1000 / analisis.totalPaxDias) : 0} <span style={{ fontSize: 14, color: "var(--muted)" }}>g</span></div></div>
-      </div>
-
-      {/* Telemetría */}
-      <div className="card">
-        <div style={{ fontFamily: "var(--mono)", fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--navy)", marginBottom: 8 }}>Telemetría · g por pax·día en el tiempo</div>
-        {chart}
-      </div>
-
-      {/* Tabla teórico vs real */}
-      <div className="card">
-        <div style={{ fontFamily: "var(--mono)", fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--navy)", marginBottom: 4 }}>Consumo por rubro · teórico (banda) vs real</div>
-        <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 12 }}>El teórico es banda de dieta × raciones. Solo los rubros con banda cargada muestran teórico. El real es lo pedido/autorizado, normalizado.</div>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-          <thead><tr style={{ textAlign: "left", borderBottom: "2px solid var(--border)" }}>
-            <th style={{ padding: "8px 6px", fontSize: 11, textTransform: "uppercase", color: "var(--muted)" }}>Rubro</th>
-            <th style={{ padding: "8px 6px", fontSize: 11, textTransform: "uppercase", color: "var(--muted)", textAlign: "right" }}>Teórico (banda)</th>
-            <th style={{ padding: "8px 6px", fontSize: 11, textTransform: "uppercase", color: "var(--muted)", textAlign: "right" }}>Real</th>
-            <th style={{ padding: "8px 6px", fontSize: 11, textTransform: "uppercase", color: "var(--muted)", textAlign: "right" }}>Estado</th>
-            <th style={{ padding: "8px 6px" }}></th>
-          </tr></thead>
-          <tbody>
-            {analisis.filas.map(f => {
-              let estado = "—";
-              if (f.tieneBanda && f.teoMax != null) {
-                if (f.real < f.teoMin) estado = <span style={{ color: "var(--accent2)", fontWeight: 600 }}>Bajo banda</span>;
-                else if (f.real > f.teoMax) estado = <span style={{ color: "var(--danger)", fontWeight: 600 }}>Sobre banda</span>;
-                else estado = <span style={{ color: "var(--accent)", fontWeight: 600 }}>En banda</span>;
-              }
-              return (
-                <tr key={f.categoria} style={{ borderBottom: "1px solid var(--border)" }}>
-                  <td style={{ padding: "8px 6px", fontWeight: 600 }}>{f.categoria}</td>
-                  <td style={{ padding: "8px 6px", textAlign: "right", fontFamily: "var(--mono)", color: f.tieneBanda ? "var(--ink)" : "var(--muted2)" }}>{f.tieneBanda ? `${f.teoMin.toFixed(0)}–${f.teoMax.toFixed(0)} ${f.unidad}` : "sin banda"}</td>
-                  <td style={{ padding: "8px 6px", textAlign: "right", fontFamily: "var(--mono)", fontWeight: 600 }}>{f.real.toFixed(1)} {f.unidad}</td>
-                  <td style={{ padding: "8px 6px", textAlign: "right" }}>{estado}</td>
-                  <td style={{ padding: "8px 6px", textAlign: "right" }}>{f.tieneBanda && <button className="btn btn-ghost btn-sm" style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => setEditParam({ grupo: f.categoria, min: dieta[f.categoria].min, max: dieta[f.categoria].max, unidad: dieta[f.categoria].unidad })}>Editar banda</button>}</td>
-                </tr>
-              );
-            })}
-            {!analisis.filas.length && <tr><td colSpan={5} style={{ padding: 24, textAlign: "center", color: "var(--muted2)" }}>Sin datos para los filtros elegidos.</td></tr>}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Editor de banda de dieta */}
-      {editParam && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(8,47,78,.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }} onClick={e => e.target === e.currentTarget && setEditParam(null)}>
-          <div className="card" style={{ maxWidth: 420, width: "90%", margin: 0 }}>
-            <div style={{ fontFamily: "var(--mono)", fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--navy)", marginBottom: 12 }}>Editar banda de dieta · {editParam.grupo}</div>
-            <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 12 }}>Consumo por persona por día (la banda se multiplica por pax×días para el teórico).</div>
-            <div style={{ display: "flex", gap: 12 }}>
-              <FG label="Mínimo"><input type="number" step="0.01" min="0" value={editParam.min} onChange={e => setEditParam({ ...editParam, min: e.target.value })} /></FG>
-              <FG label="Máximo"><input type="number" step="0.01" min="0" value={editParam.max} onChange={e => setEditParam({ ...editParam, max: e.target.value })} /></FG>
-              <FG label="Unidad"><select value={editParam.unidad} onChange={e => setEditParam({ ...editParam, unidad: e.target.value })}><option>Kg</option><option>Ltrs</option></select></FG>
-            </div>
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
-              <button className="btn btn-ghost btn-sm" onClick={() => setEditParam(null)}>Cancelar</button>
-              <button className="btn btn-primary" onClick={guardarParam} disabled={savingParam}>{savingParam ? "Guardando…" : "Guardar"}</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function PageTracker({ notify }) {
   const [pedidos, setPedidos] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -2218,7 +1871,7 @@ function PageStockVuelta({ notify, userEmail }) {
 // puerto" del barco (usa el stock verificado si Nicolás lo cargó, si no el
 // stock original) menos todo lo consumido desde esa fecha, y resta lo que
 // se cargue hoy.
-function FormMovimientoStock({ base, baseline, movimientosStock = [], pedidosEntregados = [], solicitantes = [], onSave, onCancel, notify }) {
+function FormMovimientoStock({ base, baseline, consumidoPrevio, solicitantes = [], onSave, onCancel, notify }) {
   const [saving, setSaving] = useState(false);
   const [cabecera, setCabecera] = useState({
     base_buque: base,
@@ -2227,15 +1880,18 @@ function FormMovimientoStock({ base, baseline, movimientosStock = [], pedidosEnt
     observaciones: "",
   });
   const stockBase = baseline?.viveres_stock_vuelta_items || [];
-  const stockActualDict = useMemo(() => stockActualPorCatalogo(baseline, movimientosStock, pedidosEntregados), [baseline, movimientosStock, pedidosEntregados]);
-  const [items, setItems] = useState(() => stockBase.map(it => ({
-    catalogo_id: it.catalogo_id,
-    descripcion: it.descripcion,
-    categoria: it.categoria,
-    unidad: it.unidad_analisis,
-    stockActual: stockActualDict[it.catalogo_id] ?? 0,
-    consumido: "",
-  })));
+  const [items, setItems] = useState(() => stockBase.map(it => {
+    const previo = consumidoPrevio[it.catalogo_id] || 0;
+    const partida = it.stock_verificado != null ? it.stock_verificado : it.stock;
+    return {
+      catalogo_id: it.catalogo_id,
+      descripcion: it.descripcion,
+      categoria: it.categoria,
+      unidad: it.unidad_analisis,
+      stockActual: Math.max(0, (partida || 0) - previo),
+      consumido: "",
+    };
+  }));
   const [filtroCateg, setFiltroCateg] = useState("");
   const [busqueda, setBusqueda] = useState("");
 
@@ -2251,8 +1907,8 @@ function FormMovimientoStock({ base, baseline, movimientosStock = [], pedidosEnt
   const cargados = items.filter(it => it.consumido !== "" && it.consumido != null && parseFloat(it.consumido) > 0).length;
 
   const handleGuardar = async () => {
-    if (!cabecera.registrado_por.trim() || !cabecera.fecha) {
-      alert("Completá quién registra el consumo y la fecha");
+    if (!cabecera.registrado_por || !cabecera.fecha) {
+      alert("Completá Solicitante y Fecha");
       return;
     }
     setSaving(true);
@@ -2281,16 +1937,11 @@ function FormMovimientoStock({ base, baseline, movimientosStock = [], pedidosEnt
         <div className="card-title">Consumo de hoy — {base}</div>
         <div className="form-grid-3">
           <FG label="Base / Buque"><input value={cabecera.base_buque} disabled /></FG>
-          <FG label="Registrado por *" hint="Cualquier persona a bordo, no hace falta que sea el cocinero">
-            <input
-              value={cabecera.registrado_por}
-              onChange={e => setCab("registrado_por", e.target.value)}
-              placeholder="Nombre de quien carga el consumo"
-              list="nombres-a-bordo"
-            />
-            <datalist id="nombres-a-bordo">
-              {solicitantes.map(s => <option key={s.id} value={s.nombre} />)}
-            </datalist>
+          <FG label="Registrado por *">
+            <select value={cabecera.registrado_por} onChange={e => setCab("registrado_por", e.target.value)}>
+              <option value="">Seleccionar...</option>
+              {solicitantes.map(s => <option key={s.id} value={s.nombre}>{s.nombre}</option>)}
+            </select>
           </FG>
           <FG label="Fecha *"><input type="date" value={cabecera.fecha} onChange={e => setCab("fecha", e.target.value)} /></FG>
         </div>
@@ -2409,7 +2060,6 @@ function PageMovimientoStock({ notify, userEmail }) {
   const [stockVuelta, setStockVuelta] = useState([]);
   const [movimientos, setMovimientos] = useState([]);
   const [solicitantes, setSolicitantes] = useState([]);
-  const [pedidosEntregados, setPedidosEntregados] = useState([]);
   const [loading, setLoading] = useState(true);
   const [baseElegida, setBaseElegida] = useState("");
   const [mostrarForm, setMostrarForm] = useState(false);
@@ -2419,9 +2069,8 @@ function PageMovimientoStock({ notify, userEmail }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [sv, mv, sol, ped] = await Promise.all([api.getStockVuelta(), api.getMovimientosStock(), api.getSolicitantes(), api.getPedidos({ status: "aprobado" })]);
+      const [sv, mv, sol] = await Promise.all([api.getStockVuelta(), api.getMovimientosStock(), api.getSolicitantes()]);
       setStockVuelta(sv); setMovimientos(mv); setSolicitantes(sol);
-      setPedidosEntregados(ped.filter(p => p.tracker_status === "entregado"));
     } catch (e) {
       notify("Error al cargar el stock en puerto: " + e.message, "error");
     } finally {
@@ -2436,6 +2085,19 @@ function PageMovimientoStock({ notify, userEmail }) {
   const baseline = baseElegida
     ? stockVuelta.filter(r => r.base_buque === baseElegida).sort((a, b) => new Date(b.fecha) - new Date(a.fecha))[0]
     : null;
+
+  // Consumo ya registrado desde ese registro de vuelta a puerto (para no
+  // arrastrar consumo de un ciclo anterior si se cargó un nuevo registro).
+  const consumidoPrevio = useMemo(() => {
+    if (!baseline) return {};
+    const acc = {};
+    movimientos
+      .filter(m => m.base_buque === baseElegida && new Date(m.fecha) >= new Date(baseline.fecha))
+      .forEach(m => (m.viveres_movimiento_stock_items || []).forEach(it => {
+        acc[it.catalogo_id] = (acc[it.catalogo_id] || 0) + (it.cantidad_consumida || 0);
+      }));
+    return acc;
+  }, [movimientos, baseElegida, baseline]);
 
   const handleGuardar = async (cabecera, items) => {
     await api.crearMovimientoStock(cabecera, items);
@@ -2465,8 +2127,7 @@ function PageMovimientoStock({ notify, userEmail }) {
       <FormMovimientoStock
         base={baseElegida}
         baseline={baseline}
-        movimientosStock={movimientos}
-        pedidosEntregados={pedidosEntregados}
+        consumidoPrevio={consumidoPrevio}
         solicitantes={solicitantes}
         onSave={handleGuardar}
         onCancel={() => setMostrarForm(false)}
@@ -2536,6 +2197,24 @@ function PageMovimientoStock({ notify, userEmail }) {
       }
 
       {detalle && <ModalMovimientoDetalle registro={detalle} onClose={() => setDetalle(null)} />}
+    </div>
+  );
+}
+
+//  PAGE: STOCK (unifica "Stock vuelta a puerto" y "Movimiento stock en puerto"
+//  en una sola sección del menú, con pestañas para pasar de una a otra sin
+//  perder el lugar).
+function PageStock({ notify, userEmail }) {
+  const [tab, setTab] = useState("vuelta");
+  return (
+    <div>
+      <div className="tabs-row">
+        <div className={`tab ${tab === "vuelta" ? "active" : ""}`} onClick={() => setTab("vuelta")}>Vuelta a puerto</div>
+        <div className={`tab ${tab === "movimiento" ? "active" : ""}`} onClick={() => setTab("movimiento")}>Movimiento en puerto</div>
+      </div>
+      {tab === "vuelta"
+        ? <PageStockVuelta notify={notify} userEmail={userEmail} />
+        : <PageMovimientoStock notify={notify} userEmail={userEmail} />}
     </div>
   );
 }
@@ -2683,7 +2362,7 @@ function PageHistorial({ onNuevo, notify }) {
 }
 
 //  PAGE: CATÁLOGO 
-const CATEGORIAS_CATALOGO = ["Almacén","Bebidas","Carnicería","Electro","Fiambrería","Frutas","Huevos","Lácteos","Limpieza","Pan","Pastas","Pescadería","Quesos","Snack y Postres","Verduras","Otro"];
+const CATEGORIAS_CATALOGO = ["Almacén","Bebidas","Electro","Fiambrería","Frutas y Verduras","Huevos","Lácteos","Limpieza","Proteínas","Snacks y Postres"];
 
 //  PAGE SOLICITANTES 
 function PageSolicitantes({ notify }) {
@@ -3601,9 +3280,7 @@ function ViveresApp({ session }) {
     nuevo:     { grupo: "Pedidos",     titulo: "Nuevo pedido",         sub: "Cargá el pedido por embarcación. La dieta y la dotación definen las cantidades." },
     historial: { grupo: "Pedidos",     titulo: "Historial de pedidos", sub: "Todos los pedidos cargados, con su estado y su costo por cabeza y día." },
     tracker:   { grupo: "Seguimiento", titulo: "Seguimiento de entregas", sub: "Avance de cada pedido desde la compra hasta la recepción a bordo." },
-    dashboard: { grupo: "Seguimiento", titulo: "Dashboard de consumo", sub: "Consumo teórico (banda de dieta) vs. real por embarcación, rubro y período. Solo lectura sobre los datos ya cargados." },
-    stock_vuelta: { grupo: "Seguimiento", titulo: "Stock vuelta a puerto", sub: "Registrá el stock que queda a bordo cuando un buque vuelve a puerto, para completar el próximo pedido de ese buque." },
-    movimiento_stock: { grupo: "Seguimiento", titulo: "Movimiento stock en puerto", sub: "Registrá a diario el consumo de víveres a bordo para tener el stock real actualizado antes del próximo pedido." },
+    stock: { grupo: "Seguimiento", titulo: "Stock", sub: "Stock a bordo: el registro al volver a puerto y el consumo diario, para tener siempre el stock real antes del próximo pedido." },
     catalogo:  { grupo: "Datos",       titulo: "Catálogo de víveres",  sub: "Artículos habilitados, con unidad, rubro y precio de referencia." },
     solicitantes: { grupo: "Datos",    titulo: "Solicitantes",         sub: "Nombres habilitados para crear pedidos. Estandarizá quién puede solicitar víveres." },
     pivot:     { grupo: "Datos",       titulo: "Análisis pivot",       sub: "Consumo y costo cruzados por embarcación, rubro y período." },
@@ -3619,9 +3296,7 @@ function ViveresApp({ session }) {
     ]},
     { titulo: "Seguimiento", items: [
       { id: "tracker", icon: "chart", label: "Seguimiento de entregas", count: 0 },
-      { id: "dashboard", icon: "chart", label: "Dashboard consumo", count: 0 },
-      { id: "stock_vuelta", icon: "box", label: "Stock vuelta a puerto", count: 0 },
-      { id: "movimiento_stock", icon: "box", label: "Movimiento stock en puerto", count: 0 },
+      { id: "stock", icon: "box", label: "Stock", count: 0 },
     ]},
     { titulo: "Datos", items: [
       { id: "catalogo",     icon: "box",   label: "Catálogo",       count: 0 },
@@ -3725,9 +3400,7 @@ function ViveresApp({ session }) {
             {page === "nuevo"     && <PageNuevo notify={notify} onSaved={() => { setPage("historial"); loadCounts(); }} onCancel={() => setPage("historial")} />}
             {page === "historial" && <PageHistorial onNuevo={() => setPage("nuevo")} notify={notify} />}
             {page === "tracker"   && <PageTracker notify={notify} />}
-            {page === "dashboard" && <PageDashboardConsumo notify={notify} />}
-            {page === "stock_vuelta" && <PageStockVuelta notify={notify} userEmail={userEmail} />}
-            {page === "movimiento_stock" && <PageMovimientoStock notify={notify} userEmail={userEmail} />}
+            {page === "stock" && <PageStock notify={notify} userEmail={userEmail} />}
             {page === "catalogo"  && <PageCatalogo notify={notify} />}
             {page === "solicitantes" && <PageSolicitantes notify={notify} />}
             {page === "pivot"     && <PagePivot />}
@@ -3743,8 +3416,7 @@ function ViveresApp({ session }) {
           { id: "nuevo",     label: "Nuevo",    icon: "cart",  count: 0 },
           { id: "historial", label: "Historial",icon: "list",  count: 0 },
           { id: "tracker",   label: "Entregas", icon: "chart", count: 0 },
-          { id: "stock_vuelta", label: "Stock", icon: "box", count: 0 },
-          { id: "movimiento_stock", label: "Consumo", icon: "box", count: 0 },
+          { id: "stock",     label: "Stock",    icon: "box",   count: 0 },
           { id: "catalogo",  label: "Catálogo", icon: "box",   count: 0 },
         ].map(it => (
           <div

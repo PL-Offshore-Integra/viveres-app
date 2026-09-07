@@ -119,6 +119,76 @@ const api = {
     const { data } = supabase.storage.from("cotizaciones").getPublicUrl(path);
     return data.publicUrl;
   },
+
+  //  PEDIDO OFICINA — independiente de los pedidos de barco: sin PAX/días
+  //  ni control de ración, con su propia tabla y su propio flujo de
+  //  revisión/aprobación y seguimiento de entrega.
+  async getPedidosOficina(filtros = {}) {
+    let q = supabase.from("viveres_pedidos_oficina").select("*, viveres_pedidos_oficina_items(*)").order("created_at", { ascending: false });
+    if (filtros.status) q = q.eq("status", filtros.status);
+    if (filtros.statuses) q = q.in("status", filtros.statuses);
+    const { data, error } = await q;
+    if (error) throw error;
+    return data || [];
+  },
+  async crearPedidoOficina(pedido, items) {
+    const { data: nuevo, error } = await supabase
+      .from("viveres_pedidos_oficina")
+      .insert([{ ...pedido, fecha_pedido: pedido.fecha_pedido || null }])
+      .select()
+      .single();
+    if (error) throw error;
+    if (items?.length) {
+      const { error: errItems } = await supabase
+        .from("viveres_pedidos_oficina_items")
+        .insert(items.map(it => ({ ...it, pedido_id: nuevo.id })));
+      if (errItems) throw errItems;
+    }
+    return nuevo;
+  },
+  async actualizarPedidoOficina(id, cambios) {
+    const { data, error } = await supabase
+      .from("viveres_pedidos_oficina")
+      .update({ ...cambios, updated_at: new Date().toISOString() })
+      .eq("id", id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  },
+  async actualizarItemsOficina(pedidoId, items) {
+    const { error: errDel } = await supabase
+      .from("viveres_pedidos_oficina_items")
+      .delete()
+      .eq("pedido_id", pedidoId);
+    if (errDel) throw errDel;
+    if (items?.length) {
+      const { error: errIns } = await supabase
+        .from("viveres_pedidos_oficina_items")
+        .insert(items.map(it => ({ ...it, pedido_id: pedidoId })));
+      if (errIns) throw errIns;
+    }
+  },
+  async eliminarPedidoOficina(id) {
+    const { error: errItems } = await supabase.from("viveres_pedidos_oficina_items").delete().eq("pedido_id", id);
+    if (errItems) throw errItems;
+    const { error } = await supabase.from("viveres_pedidos_oficina").delete().eq("id", id);
+    if (error) throw error;
+  },
+  async subirRemitoOficina(file, pedidoId) {
+    const path = `viveres/oficina/remitos/${pedidoId}/${Date.now()}_${file.name}`;
+    const { error } = await supabase.storage.from("cotizaciones").upload(path, file, { upsert: true });
+    if (error) throw error;
+    const { data } = supabase.storage.from("cotizaciones").getPublicUrl(path);
+    return data.publicUrl;
+  },
+  async subirCotizacionOficina(file, pedidoId) {
+    const path = `viveres/oficina/cotizaciones/${pedidoId}/${Date.now()}_${file.name}`;
+    const { error } = await supabase.storage.from("cotizaciones").upload(path, file, { upsert: true });
+    if (error) throw error;
+    const { data } = supabase.storage.from("cotizaciones").getPublicUrl(path);
+    return data.publicUrl;
+  },
   async getSolicitantes() {
     const { data, error } = await supabase
       .from("viveres_solicitantes")
@@ -3893,14 +3963,720 @@ function PageControlRacion() {
   );
 }
 
+//  PEDIDO OFICINA — flujo independiente de los pedidos de barco
+//  Comparte el mismo catálogo y la misma lista de solicitantes, pero no usa
+//  PAX/días ni control de ración (no aplica a compras de oficina), y guarda
+//  todo en sus propias tablas (viveres_pedidos_oficina / *_items) para no
+//  mezclarse con Nuevo pedido / Historial / Tracker / Análisis pivot de los
+//  barcos.
+function FormPedidoOficina({ catalogoInicial, solicitantes = [], onSave, onCancel, notify }) {
+  const [catalogo] = useState(catalogoInicial || []);
+  const [saving, setSaving] = useState(false);
+  const [cabecera, setCabecera] = useState({
+    solicitado_por: "",
+    fecha_pedido: new Date().toISOString().split("T")[0],
+    observaciones: "",
+  });
+  const [items, setItems] = useState(() => catalogo.map(c => ({
+    catalogo_id: c.id, descripcion: c.descripcion, categoria: c.categoria,
+    unidad: c.unidad || "Unidad", cantidad_pedida: 0,
+  })));
+  const [filtroCateg, setFiltroCateg] = useState("");
+  const [busqueda, setBusqueda] = useState("");
+
+  const setCab = (k, v) => setCabecera(c => ({ ...c, [k]: v }));
+  const setItem = (id, v) => setItems(prev => prev.map(it => it.catalogo_id === id ? { ...it, cantidad_pedida: parseFloat(v) || 0 } : it));
+
+  const categorias = [...new Set(catalogo.map(c => c.categoria))].sort();
+  const itemsFiltrados = items.filter(it => {
+    if (filtroCateg && it.categoria !== filtroCateg) return false;
+    if (busqueda && !it.descripcion.toLowerCase().includes(busqueda.toLowerCase())) return false;
+    return true;
+  });
+  const itemsConPedido = items.filter(it => it.cantidad_pedida > 0);
+
+  const handleGuardar = async (status = "borrador") => {
+    if (!cabecera.solicitado_por) { alert("Completá Solicitado por"); return; }
+    setSaving(true);
+    try {
+      const itemsAGuardar = items.filter(it => it.cantidad_pedida > 0);
+      await onSave({ ...cabecera, status }, itemsAGuardar);
+    } catch (e) { notify("Error: " + e.message, "error"); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div>
+      <div className="card">
+        <div className="card-title">Datos del pedido de oficina</div>
+        <div className="form-grid-3">
+          <FG label="Solicitado por *">
+            <select value={cabecera.solicitado_por} onChange={e => setCab("solicitado_por", e.target.value)}>
+              <option value="">Seleccionar...</option>
+              {solicitantes.map(s => <option key={s.id} value={s.nombre}>{s.nombre}</option>)}
+              {cabecera.solicitado_por && !solicitantes.some(s => s.nombre === cabecera.solicitado_por) && <option value={cabecera.solicitado_por}>{cabecera.solicitado_por}</option>}
+            </select>
+          </FG>
+          <FG label="Fecha del pedido"><input type="date" value={cabecera.fecha_pedido} onChange={e => setCab("fecha_pedido", e.target.value)} /></FG>
+        </div>
+        <FG label="Observaciones"><textarea value={cabecera.observaciones} onChange={e => setCab("observaciones", e.target.value)} placeholder="Notas adicionales..." /></FG>
+      </div>
+
+      <div className="tabs-row">
+        <div className={`tab ${filtroCateg === "" ? "active" : ""}`} onClick={() => setFiltroCateg("")}>Todos</div>
+        {categorias.map(cat => {
+          const cnt = items.filter(it => it.categoria === cat && it.cantidad_pedida > 0).length;
+          return <div key={cat} className={`tab ${filtroCateg === cat ? "active" : ""}`} onClick={() => setFiltroCateg(cat)}>{cat}{cnt > 0 && <span style={{ marginLeft: 6, background: "var(--accent2)", color: "#fff", fontSize: 9, fontWeight: 700, padding: "1px 5px", borderRadius: 8, fontFamily: "var(--mono)" }}>{cnt}</span>}</div>;
+        })}
+      </div>
+
+      <div className="filter-row" style={{ marginBottom: 12 }}>
+        <input className="filter-input" placeholder=" Buscar ítem..." value={busqueda} onChange={e => setBusqueda(e.target.value)} />
+        {busqueda && <button className="btn btn-ghost btn-sm" onClick={() => setBusqueda("")}>✕</button>}
+        <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 11, color: "var(--muted)" }}>{itemsFiltrados.length} visibles</span>
+      </div>
+
+      <div className="card" style={{ padding: 0, overflow: "hidden", marginBottom: 90 }}>
+        <div className="table-wrap">
+          <table className="tracker-table">
+            <thead><tr><th>Categoría</th><th>Descripción</th><th>Unidad</th><th style={{ width: 110 }}>Cantidad</th></tr></thead>
+            <tbody>
+              {itemsFiltrados.map(it => (
+                <tr key={it.catalogo_id} style={{ background: it.cantidad_pedida > 0 ? "#F0FDF4" : "inherit" }}>
+                  <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.categoria}</td>
+                  <td style={{ fontWeight: it.cantidad_pedida > 0 ? 600 : 400, fontSize: 12 }}>{it.descripcion}</td>
+                  <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.unidad}</td>
+                  <td>
+                    <input
+                      type="number" min={0} value={it.cantidad_pedida || ""} placeholder="0"
+                      onChange={e => setItem(it.catalogo_id, e.target.value)}
+                      style={{ width: 90, textAlign: "right", background: it.cantidad_pedida > 0 ? "#DCFCE7" : "var(--surface)", border: `1px solid ${it.cantidad_pedida > 0 ? "#86EFAC" : "var(--border)"}`, borderRadius: "var(--r)", fontFamily: "var(--mono)", fontSize: 12, padding: "4px 8px", outline: "none", fontWeight: it.cantidad_pedida > 0 ? 700 : 400 }}
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="fixed-action-bar">
+        <div style={{ flex: 1 }}>
+          {itemsConPedido.length === 0
+            ? <span style={{ fontSize: 12, color: "rgba(255,255,255,.5)" }}>Sin ítems seleccionados</span>
+            : <span style={{ fontSize: 12, color: "rgba(255,255,255,.7)" }}>{itemsConPedido.length} ítem{itemsConPedido.length !== 1 ? "s" : ""} seleccionados</span>
+          }
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+          <button className="btn btn-ghost" onClick={onCancel} style={{ color: "rgba(255,255,255,.7)", borderColor: "rgba(255,255,255,.2)" }}>Cancelar</button>
+          <button className="btn" onClick={() => handleGuardar("borrador")} disabled={saving} style={{ background: "rgba(255,255,255,.15)", color: "#fff", borderColor: "rgba(255,255,255,.2)" }}>Guardar borrador</button>
+          <button className="btn btn-success" onClick={() => handleGuardar("enviado")} disabled={saving || itemsConPedido.length === 0}>{saving ? "Enviando..." : "✓ Enviar al comprador"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PageNuevoOficina({ notify, onSaved, onCancel }) {
+  const [catalogo, setCatalogo] = useState([]);
+  const [solicitantes, setSolicitantes] = useState([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    Promise.all([api.getCatalogo(), api.getSolicitantes()])
+      .then(([cat, sol]) => { setCatalogo(cat); setSolicitantes(sol); })
+      .catch(e => notify("Error al cargar datos: " + e.message, "error"))
+      .finally(() => setLoading(false));
+  }, [notify]);
+  if (loading) return <div className="loading"><span className="spin">◌</span> Cargando catálogo...</div>;
+  return (
+    <FormPedidoOficina
+      catalogoInicial={catalogo}
+      solicitantes={solicitantes}
+      onSave={async (cab, items) => { await api.crearPedidoOficina(cab, items); onSaved(); }}
+      onCancel={onCancel}
+      notify={notify}
+    />
+  );
+}
+
+function ModalRevisarOficina({ pedido, onClose, onActualizado, notify }) {
+  const [modo, setModo] = useState("detalle");
+  const [motivoRechazo, setMotivoRechazo] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [itemsEdit, setItemsEdit] = useState(() =>
+    (pedido.viveres_pedidos_oficina_items || [])
+      .filter(it => it.cantidad_pedida > 0)
+      .map(it => ({ ...it, cantidad_autorizada: it.cantidad_autorizada ?? it.cantidad_pedida, _eliminado: false }))
+  );
+  const [aprobadoPor, setAprobadoPor] = useState("");
+
+  const itemsVisibles = itemsEdit.filter(it => !it._eliminado);
+  const huboCambios = itemsEdit.some(it => it._eliminado || it.cantidad_autorizada !== it.cantidad_pedida);
+
+  const setCantidad = (id, val) => setItemsEdit(prev => prev.map(it => it.id === id ? { ...it, cantidad_autorizada: parseFloat(val) || 0 } : it));
+  const eliminarItem = (id) => setItemsEdit(prev => prev.map(it => it.id === id ? { ...it, _eliminado: true } : it));
+  const restaurarItem = (id) => setItemsEdit(prev => prev.map(it => it.id === id ? { ...it, _eliminado: false, cantidad_autorizada: it.cantidad_pedida } : it));
+
+  const handleAprobar = async () => {
+    if (itemsVisibles.length === 0) { alert("No quedan ítems en el pedido. Rechazalo en cambio."); return; }
+    if (!aprobadoPor.trim()) { alert("Ingresá quién aprueba el pedido"); return; }
+    setSaving(true);
+    try {
+      const itemsAGuardar = itemsVisibles.map(({ _eliminado, ...rest }) => rest);
+      await api.actualizarItemsOficina(pedido.id, itemsAGuardar);
+      await api.actualizarPedidoOficina(pedido.id, {
+        status: "aprobado",
+        fecha_aprobacion: new Date().toISOString(),
+        tracker_status: "pendiente",
+        aprobado_por: aprobadoPor.trim(),
+      });
+      notify("Pedido de oficina aprobado", "success");
+      onActualizado();
+    } catch (e) {
+      notify("Error: " + e.message, "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRechazar = async () => {
+    if (!motivoRechazo.trim()) return alert("Ingresá un motivo");
+    setSaving(true);
+    try {
+      await api.actualizarPedidoOficina(pedido.id, { status: "rechazado", observaciones: motivoRechazo });
+      notify("Pedido rechazado", "warn");
+      onActualizado();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal modal-lg">
+        <div className="mhdr">
+          <div>
+            <div className="mtitle"> Pedido de Oficina</div>
+            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>{pedido.solicitado_por} · {fmtDate(pedido.fecha_pedido)}</div>
+          </div>
+          <button className="mclose" onClick={onClose}>✕</button>
+        </div>
+        <div className="mbody">
+          <div className="tabs-row">
+            <div className={`tab ${modo === "detalle" ? "active" : ""}`} onClick={() => setModo("detalle")}>Detalle</div>
+            <div
+              className={`tab ${modo === "rechazar" ? "active" : ""}`}
+              onClick={() => setModo("rechazar")}
+              style={{ color: modo === "rechazar" ? "var(--danger)" : undefined, borderBottomColor: modo === "rechazar" ? "var(--danger)" : undefined }}
+            >
+              Rechazar
+            </div>
+          </div>
+
+          {modo === "detalle" && (
+            <div>
+              {huboCambios && (
+                <div className="info-box warn mb12" style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8 }}>
+                  <span></span>
+                  <span>Hay <strong>modificaciones sin aprobar</strong>. Usá "✓ Aprobar" para confirmarlas.</span>
+                </div>
+              )}
+              <div className="table-wrap">
+                <table className="items-edit">
+                  <thead>
+                    <tr>
+                      <th>Categoría</th>
+                      <th>Descripción</th>
+                      <th>Unidad</th>
+                      <th style={{ width: 90, textAlign: "right" }}>Cant. original</th>
+                      <th style={{ width: 120, textAlign: "right" }}>Cant. aprobada</th>
+                      <th style={{ width: 32 }}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {itemsEdit.length === 0 ? (
+                      <tr><td colSpan={6} style={{ textAlign: "center", padding: 24, color: "var(--muted2)" }}>Sin ítems pedidos</td></tr>
+                    ) : itemsEdit.map(it => {
+                      const modificado = !it._eliminado && it.cantidad_autorizada !== it.cantidad_pedida;
+                      return (
+                        <tr key={it.id} style={{ opacity: it._eliminado ? 0.45 : 1, background: it._eliminado ? "#FEF2F2" : modificado ? "#FFFBEB" : "inherit" }}>
+                          <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.categoria}</td>
+                          <td style={{ fontWeight: 500, fontSize: 12, textDecoration: it._eliminado ? "line-through" : "none", color: it._eliminado ? "var(--muted2)" : "var(--text)" }}>{it.descripcion}</td>
+                          <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.unidad}</td>
+                          <td style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--muted)", textAlign: "right" }}>{it.cantidad_pedida}</td>
+                          <td>
+                            {it._eliminado ? (
+                              <button onClick={() => restaurarItem(it.id)} style={{ background: "none", border: "1px solid var(--border)", borderRadius: "var(--r)", fontSize: 10, color: "var(--muted)", cursor: "pointer", padding: "3px 8px", fontFamily: "var(--sans)" }}>↩ Restaurar</button>
+                            ) : (
+                              <input
+                                type="number" min={0} value={it.cantidad_autorizada} onChange={e => setCantidad(it.id, e.target.value)}
+                                style={{ width: "100%", background: modificado ? "#FEF9C3" : "var(--surface)", border: `1px solid ${modificado ? "#FDE68A" : "var(--border)"}`, borderRadius: "var(--r)", fontFamily: "var(--mono)", fontSize: 12, fontWeight: modificado ? 700 : 400, padding: "5px 8px", outline: "none", textAlign: "right", color: modificado ? "#92400E" : "var(--text)" }}
+                              />
+                            )}
+                          </td>
+                          <td>
+                            {!it._eliminado && (
+                              <button onClick={() => eliminarItem(it.id)} title="Eliminar ítem" style={{ background: "none", border: "none", color: "var(--muted2)", cursor: "pointer", fontSize: 15, lineHeight: 1, padding: "2px 4px", borderRadius: 4 }}>✕</button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="form-section">Aprobación</div>
+              <div className="form-grid">
+                <FG label="Aprobado por *"><input value={aprobadoPor} onChange={e => setAprobadoPor(e.target.value)} placeholder="Nombre de quién aprueba..." /></FG>
+              </div>
+            </div>
+          )}
+
+          {modo === "rechazar" && (
+            <div>
+              <div className="info-box danger mb12" style={{ fontSize: 12 }}>El pedido quedará registrado como rechazado.</div>
+              <FG label="Motivo *"><textarea value={motivoRechazo} onChange={e => setMotivoRechazo(e.target.value)} placeholder="Explicá por qué se rechaza..." style={{ minHeight: 100 }} /></FG>
+            </div>
+          )}
+        </div>
+        <div className="mftr">
+          <button className="btn btn-ghost" onClick={onClose}>Cerrar</button>
+          {modo === "rechazar" && (
+            <button className="btn btn-danger" onClick={handleRechazar} disabled={saving || !motivoRechazo.trim()}>{saving ? "..." : "✕ Confirmar rechazo"}</button>
+          )}
+          {modo === "detalle" && (
+            <button className="btn btn-success" onClick={handleAprobar} disabled={saving || itemsVisibles.length === 0 || !aprobadoPor.trim()}>
+              {saving ? "Aprobando..." : huboCambios ? "✓ Aprobar con cambios" : "✓ Aprobar"}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PageInboxOficina({ notify, onNeedRefresh }) {
+  const [pedidos, setPedidos] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState(null);
+  const [eliminando, setEliminando] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setPedidos(await api.getPedidosOficina({ status: "enviado" })); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleEliminar = async (e, p) => {
+    e.stopPropagation();
+    if (!window.confirm(`¿Eliminar este pedido de oficina de ${p.solicitado_por}? Esta acción no se puede deshacer.`)) return;
+    setEliminando(p.id);
+    try {
+      await api.eliminarPedidoOficina(p.id);
+      notify("Pedido eliminado", "warn");
+      load();
+      onNeedRefresh();
+    } catch (err) {
+      notify("Error al eliminar: " + err.message, "error");
+    } finally {
+      setEliminando(null);
+    }
+  };
+
+  return (
+    <div>
+      {loading ? <div className="loading"><span className="spin">◌</span></div> :
+        pedidos.length === 0
+          ? <div className="empty-state"><div style={{ fontSize: 28, marginBottom: 8 }}></div>Sin pedidos pendientes</div>
+          : pedidos.map(p => {
+              const cnt = (p.viveres_pedidos_oficina_items || []).filter(it => it.cantidad_pedida > 0).length;
+              return (
+                <div key={p.id} className="req-row unread" onClick={() => setSelected(p)}>
+                  <div className="flex-gap mb8">
+                    <span className="text-mono" style={{ fontSize: 11, color: "var(--accent)" }}>{fmtDate(p.fecha_pedido)}</span>
+                    <span className="badge b-blue">Oficina</span>
+                  </div>
+                  <div className="req-title"> Pedido de oficina — {p.solicitado_por}</div>
+                  <div className="req-meta"><span>{cnt} ítems</span></div>
+                  <div className="req-row-actions" onClick={e => e.stopPropagation()}>
+                    <button className="btn btn-danger btn-sm" onClick={e => handleEliminar(e, p)} disabled={eliminando === p.id}>{eliminando === p.id ? "..." : "✕ Eliminar"}</button>
+                  </div>
+                </div>
+              );
+            })
+      }
+      {selected && (
+        <ModalRevisarOficina
+          pedido={selected}
+          onClose={() => setSelected(null)}
+          onActualizado={() => { setSelected(null); notify("Pedido actualizado", "success"); load(); onNeedRefresh(); }}
+          notify={notify}
+        />
+      )}
+    </div>
+  );
+}
+
+function PageHistorialOficina({ onNuevo, notify }) {
+  const [pedidos, setPedidos] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState(null);
+  const [eliminando, setEliminando] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setPedidos(await api.getPedidosOficina()); }
+    catch (err) { notify("Error al cargar pedidos: " + (err?.message || "desconocido"), "error"); }
+    finally { setLoading(false); }
+  }, [notify]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleEliminar = async (e, p) => {
+    e.stopPropagation();
+    if (!window.confirm(`¿Eliminar este pedido de oficina de ${p.solicitado_por} del ${fmtDate(p.fecha_pedido)}? Se borran también sus ítems. Esta acción no se puede deshacer.`)) return;
+    setEliminando(p.id);
+    const backup = pedidos;
+    setPedidos(prev => prev.filter(x => x.id !== p.id));
+    try {
+      await api.eliminarPedidoOficina(p.id);
+      notify("Pedido eliminado", "warn");
+    } catch (err) {
+      setPedidos(backup);
+      notify("Error al eliminar: " + (err?.message || "desconocido"), "error");
+    } finally {
+      setEliminando(null);
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 12 }}>
+        <div style={{ fontSize: 13, color: "var(--muted)" }}>{pedidos.length} pedidos registrados</div>
+        <button className="btn btn-primary btn-sm" onClick={onNuevo}>+ Nuevo pedido</button>
+      </div>
+      {loading ? <div className="loading"><span className="spin">◌</span></div> :
+        pedidos.length === 0 ? <div className="empty-state"><div style={{ fontSize: 28, marginBottom: 8 }}></div>Sin pedidos</div> :
+        pedidos.map(p => {
+          const s = STATUS_PEDIDO[p.status] || { label: p.status, color: "b-gray" };
+          const cnt = (p.viveres_pedidos_oficina_items || []).filter(it => it.cantidad_pedida > 0).length;
+          return (
+            <div key={p.id} className="req-row" onClick={() => setSelected(p)}>
+              <div className="flex-between mb8">
+                <div className="flex-gap"><span className="text-mono" style={{ fontSize: 11, color: "var(--accent)" }}>{fmtDate(p.fecha_pedido)}</span><span className={`badge ${s.color}`}>{s.label}</span></div>
+              </div>
+              <div className="req-title">Pedido de oficina — {p.solicitado_por}</div>
+              <div className="req-meta"><span>{cnt} ítems</span></div>
+              <div className="req-row-actions" onClick={e => e.stopPropagation()}>
+                <button className="btn btn-danger btn-sm" onClick={e => handleEliminar(e, p)} disabled={eliminando === p.id} title="Eliminar pedido">{eliminando === p.id ? "..." : "✕ Eliminar"}</button>
+              </div>
+            </div>
+          );
+        })
+      }
+      {selected && <ModalRevisarOficina pedido={selected} onClose={() => setSelected(null)} onActualizado={() => { setSelected(null); load(); }} notify={notify} />}
+    </div>
+  );
+}
+
+function ModalTrackerEditarOficina({ pedido, onClose, onSave, notify }) {
+  const remitoInputId = `remito-oficina-input-${pedido.id}`;
+  const cotizacionInputId = `cotizacion-oficina-input-${pedido.id}`;
+  const [form, setForm] = useState({
+    tracker_status: pedido.tracker_status || "pendiente",
+    nro_remito: pedido.nro_remito || "",
+    nro_oc: pedido.nro_oc || "",
+    fecha_entrega: pedido.fecha_entrega ? pedido.fecha_entrega.slice(0, 10) : "",
+    tracker_notas: pedido.tracker_notas || "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadingCotizacion, setUploadingCotizacion] = useState(false);
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const handleUploadRemito = async (file) => {
+    if (!file) return;
+    setUploading(true);
+    try {
+      const url = await api.subirRemitoOficina(file, pedido.id);
+      const updated = await api.actualizarPedidoOficina(pedido.id, { remito_url: url, nro_remito: form.nro_remito || file.name });
+      notify("Remito adjuntado", "success");
+      onSave(updated);
+    } catch (e) { notify("Error al subir remito: " + e.message, "error"); }
+    finally { setUploading(false); }
+  };
+
+  const handleUploadCotizacion = async (file) => {
+    if (!file) return;
+    setUploadingCotizacion(true);
+    try {
+      const url = await api.subirCotizacionOficina(file, pedido.id);
+      const updated = await api.actualizarPedidoOficina(pedido.id, { cotizacion_url: url, cotizacion_nombre: file.name });
+      notify("Cotización adjuntada", "success");
+      onSave(updated);
+    } catch (e) { notify("Error al subir cotización: " + e.message, "error"); }
+    finally { setUploadingCotizacion(false); }
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const cambios = {
+        tracker_status: form.tracker_status,
+        nro_remito: form.nro_remito || null,
+        nro_oc: form.nro_oc || null,
+        tracker_notas: form.tracker_notas || null,
+        fecha_entrega: form.fecha_entrega ? new Date(form.fecha_entrega).toISOString() : null,
+      };
+      const updated = await api.actualizarPedidoOficina(pedido.id, cambios);
+      notify("Tracker actualizado", "success");
+      onSave(updated);
+    } finally { setSaving(false); }
+  };
+
+  const items = (pedido.viveres_pedidos_oficina_items || []).filter(it => it.cantidad_pedida > 0);
+
+  return (
+    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="mhdr">
+          <div>
+            <div className="mtitle"> Tracker Oficina — {pedido.solicitado_por}</div>
+            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>PL Offshore · Pedido de oficina</div>
+          </div>
+          <button className="mclose" onClick={onClose}>✕</button>
+        </div>
+        <div className="mbody">
+          <div className="fecha-chain">
+            <div className={`fecha-step ${pedido.created_at ? "done" : ""}`}>
+              <div style={{ fontSize: 20 }}></div>
+              <div className="fecha-step-label">Solicitud</div>
+              <div className="fecha-step-val">{pedido.created_at ? fmtDate(pedido.created_at) : "—"}</div>
+            </div>
+            <div className="fecha-arrow">→</div>
+            <div className={`fecha-step ${pedido.fecha_aprobacion ? "done" : ""}`}>
+              <div style={{ fontSize: 20 }}></div>
+              <div className="fecha-step-label">Aprobación</div>
+              <div className="fecha-step-val">{pedido.fecha_aprobacion ? fmtDate(pedido.fecha_aprobacion) : "—"}</div>
+              {pedido.aprobado_por && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{pedido.aprobado_por}</div>}
+            </div>
+            <div className="fecha-arrow">→</div>
+            <div className={`fecha-step ${pedido.fecha_entrega ? "done" : ""}`}>
+              <div style={{ fontSize: 20 }}></div>
+              <div className="fecha-step-label">Entrega</div>
+              <div className="fecha-step-val">{pedido.fecha_entrega ? fmtDate(pedido.fecha_entrega) : "—"}</div>
+            </div>
+          </div>
+
+          <div className="form-section">Estado</div>
+          <div className="form-grid">
+            <FG label="Estado del pedido">
+              <select value={form.tracker_status} onChange={e => set("tracker_status", e.target.value)}>
+                <option value="pendiente">Pendiente</option>
+                <option value="en_camino">En camino</option>
+                <option value="entregado">Entregado</option>
+              </select>
+            </FG>
+            <FG label="Fecha de entrega"><input type="date" value={form.fecha_entrega} onChange={e => set("fecha_entrega", e.target.value)} /></FG>
+          </div>
+
+          <div className="form-section">Orden de compra</div>
+          <div className="form-grid">
+            <FG label="N° Orden de compra"><input value={form.nro_oc} onChange={e => set("nro_oc", e.target.value)} placeholder="Ej: OC-2026-0143" /></FG>
+            <FG label="Cotización (PDF / imagen)">
+              {pedido.cotizacion_url
+                ? <a href={pedido.cotizacion_url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--blue)", display: "flex", alignItems: "center", gap: 4, marginTop: 6 }}> Ver cotización adjunta{pedido.cotizacion_nombre ? ` (${pedido.cotizacion_nombre})` : ""}</a>
+                : <>
+                    <input type="file" id={cotizacionInputId} accept=".pdf,.jpg,.jpeg,.png" style={{ display: "none" }} onChange={e => handleUploadCotizacion(e.target.files[0])} />
+                    <button className="btn btn-ghost btn-sm" style={{ marginTop: 4 }} onClick={() => document.getElementById(cotizacionInputId).click()} disabled={uploadingCotizacion}>
+                      {uploadingCotizacion ? " Subiendo..." : " Adjuntar cotización"}
+                    </button>
+                  </>
+              }
+            </FG>
+          </div>
+
+          <div className="form-section">Remito</div>
+          <div className="form-grid">
+            <FG label="N° Remito"><input value={form.nro_remito} onChange={e => set("nro_remito", e.target.value)} placeholder="Ej: 0001-00001234" /></FG>
+            <FG label="Remito firmado (PDF / imagen)">
+              {pedido.remito_url
+                ? <a href={pedido.remito_url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--blue)", display: "flex", alignItems: "center", gap: 4, marginTop: 6 }}> Ver remito adjunto</a>
+                : <>
+                    <input type="file" id={remitoInputId} accept=".pdf,.jpg,.jpeg,.png" style={{ display: "none" }} onChange={e => handleUploadRemito(e.target.files[0])} />
+                    <button className="btn btn-ghost btn-sm" style={{ marginTop: 4 }} onClick={() => document.getElementById(remitoInputId).click()} disabled={uploading}>
+                      {uploading ? " Subiendo..." : " Adjuntar remito"}
+                    </button>
+                  </>
+              }
+            </FG>
+          </div>
+
+          <FG label="Notas" full><textarea value={form.tracker_notas} onChange={e => set("tracker_notas", e.target.value)} placeholder="Observaciones sobre la entrega..." style={{ minHeight: 60 }} /></FG>
+
+          {items.length > 0 && <>
+            <div className="form-section">Ítems del pedido ({items.length})</div>
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>Categoría</th><th>Descripción</th><th>Cant. pedida</th><th>Cant. autorizada</th><th>Unidad</th></tr></thead>
+                <tbody>
+                  {items.map((it, i) => <tr key={i}><td style={{ fontSize: 11, color: "var(--muted)" }}>{it.categoria}</td><td style={{ fontWeight: 500, fontSize: 12 }}>{it.descripcion}</td><td className="text-mono" style={{ fontSize: 12, color: "var(--muted)" }}>{it.cantidad_pedida}</td><td className="text-mono" style={{ fontWeight: 700, color: "var(--accent2)" }}>{cantEfectiva(it)}</td><td style={{ fontSize: 11, color: "var(--muted)" }}>{it.unidad}</td></tr>)}
+                </tbody>
+              </table>
+            </div>
+          </>}
+        </div>
+        <div className="mftr">
+          <button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
+          <button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? "Guardando..." : "Guardar"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PageTrackerOficina({ notify }) {
+  const [pedidos, setPedidos] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState(null);
+  const [filtroStatus, setFiltroStatus] = useState("");
+  const [eliminando, setEliminando] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setPedidos(await api.getPedidosOficina({ statuses: ["aprobado", "enviado"] })); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleEliminar = async (e, p) => {
+    e.stopPropagation();
+    if (!window.confirm(`¿Eliminar este pedido de oficina de ${p.solicitado_por}? Se borran también sus ítems. Esta acción no se puede deshacer.`)) return;
+    setEliminando(p.id);
+    const backup = pedidos;
+    setPedidos(prev => prev.filter(x => x.id !== p.id));
+    try {
+      await api.eliminarPedidoOficina(p.id);
+      notify("Pedido eliminado", "warn");
+    } catch (err) {
+      setPedidos(backup);
+      notify("Error al eliminar: " + (err?.message || "desconocido"), "error");
+    } finally {
+      setEliminando(null);
+    }
+  };
+
+  const filtrados = pedidos.filter(p => {
+    if (filtroStatus && (p.tracker_status || "pendiente") !== filtroStatus) return false;
+    return true;
+  });
+
+  const stats = {
+    total: pedidos.length,
+    pendiente: pedidos.filter(p => !p.tracker_status || p.tracker_status === "pendiente").length,
+    en_camino: pedidos.filter(p => p.tracker_status === "en_camino").length,
+    entregado: pedidos.filter(p => p.tracker_status === "entregado").length,
+  };
+
+  return (
+    <div>
+      <div className="stats">
+        {[
+          { label: "Total aprobados", val: stats.total, color: "var(--blue)" },
+          { label: "Pendientes", val: stats.pendiente, color: "var(--warn)" },
+          { label: "En camino", val: stats.en_camino, color: "var(--blue)" },
+          { label: "Entregados", val: stats.entregado, color: "var(--accent2)" },
+        ].map(s => (
+          <div key={s.label} className="stat">
+            <div className="stat-label">{s.label}</div>
+            <div className="stat-value" style={{ color: s.color }}>{s.val}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="filter-row">
+        <select className="filter-select" value={filtroStatus} onChange={e => setFiltroStatus(e.target.value)}>
+          <option value="">Todos los estados</option>
+          <option value="pendiente">Pendiente</option>
+          <option value="en_camino">En camino</option>
+          <option value="entregado">Entregado</option>
+        </select>
+        {filtroStatus && <button className="btn btn-ghost btn-sm" onClick={() => setFiltroStatus("")}>✕ Limpiar</button>}
+        <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 11, color: "var(--muted)" }}>{filtrados.length} de {pedidos.length}</span>
+      </div>
+
+      {loading ? <div className="loading"><span className="spin">◌</span></div> :
+        filtrados.length === 0 ? <div className="empty-state"><div style={{ fontSize: 28, marginBottom: 8 }}></div>Sin pedidos aprobados</div> :
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Solicitante</th>
+                  <th>Estado</th>
+                  <th> Solicitud</th>
+                  <th> Aprobación</th>
+                  <th>Aprobado por</th>
+                  <th> Entrega</th>
+                  <th>Orden de compra</th>
+                  <th>Cotización</th>
+                  <th>Remito</th>
+                  <th>Notas</th>
+                  <th style={{ width: 90, textAlign: "center" }}>Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtrados.map(p => {
+                  const st = p.tracker_status || "pendiente";
+                  const stInfo = TRACKER_STATUS[st] || { label: st, color: "b-gray" };
+                  return (
+                    <tr key={p.id} className="click" onClick={() => setSelected(p)}>
+                      <td style={{ fontSize: 12 }}>{p.solicitado_por}</td>
+                      <td><span className={`badge ${stInfo.color}`}>{stInfo.label}</span></td>
+                      <td className="text-mono" style={{ fontSize: 11, color: "var(--muted)" }}>{p.created_at ? fmtDate(p.created_at) : "—"}</td>
+                      <td className="text-mono" style={{ fontSize: 11, color: p.fecha_aprobacion ? "var(--accent2)" : "var(--muted2)" }}>{p.fecha_aprobacion ? fmtDate(p.fecha_aprobacion) : "—"}</td>
+                      <td style={{ fontSize: 11, color: "var(--muted)" }}>{p.aprobado_por || "—"}</td>
+                      <td className="text-mono" style={{ fontSize: 11, color: p.fecha_entrega ? "var(--accent2)" : "var(--muted2)" }}>{p.fecha_entrega ? fmtDate(p.fecha_entrega) : "—"}</td>
+                      <td style={{ fontSize: 11, color: p.nro_oc ? "var(--text)" : "var(--muted2)" }}>{p.nro_oc || "—"}</td>
+                      <td>{p.cotizacion_url
+                        ? <a href={p.cotizacion_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ fontSize: 11, color: "var(--blue)" }}> Ver</a>
+                        : <span style={{ fontSize: 11, color: "var(--muted2)" }}>—</span>
+                      }</td>
+                      <td>{p.remito_url
+                        ? <a href={p.remito_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ fontSize: 11, color: "var(--blue)" }}> {p.nro_remito || "Ver"}</a>
+                        : <span style={{ fontSize: 11, color: "var(--muted2)" }}>{p.nro_remito || "—"}</span>
+                      }</td>
+                      <td style={{ fontSize: 11, color: "var(--muted)", maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.tracker_notas || "—"}</td>
+                      <td style={{ textAlign: "center" }} onClick={e => e.stopPropagation()}>
+                        <button className="btn btn-danger btn-sm" onClick={e => handleEliminar(e, p)} disabled={eliminando === p.id} title="Eliminar pedido">{eliminando === p.id ? "..." : "✕"}</button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      }
+      {selected && <ModalTrackerEditarOficina pedido={selected} onClose={() => setSelected(null)} onSave={(updated) => { setSelected(null); setPedidos(prev => prev.map(p => p.id === updated.id ? { ...p, ...updated } : p)); }} notify={notify} />}
+    </div>
+  );
+}
+
 function ViveresApp({ session }) {
   const userEmail = session?.user?.email || "";
   const [page, setPage] = useState("inbox");
   const [notif, setNotif] = useState(null);
   const [inboxCount, setInboxCount] = useState(0);
+  const [inboxOficinaCount, setInboxOficinaCount] = useState(0);
   const notify = useCallback((text, type = "info") => { setNotif({ text, type }); setTimeout(() => setNotif(null), 4000); }, []);
   const loadCounts = useCallback(async () => { try { const d = await api.getPedidos({ status: "enviado" }); setInboxCount(d.length); } catch (e) { console.error(e); } }, []);
-  useEffect(() => { loadCounts(); }, [loadCounts]);
+  const loadCountsOficina = useCallback(async () => { try { const d = await api.getPedidosOficina({ status: "enviado" }); setInboxOficinaCount(d.length); } catch (e) { console.error(e); } }, []);
+  useEffect(() => { loadCounts(); loadCountsOficina(); }, [loadCounts, loadCountsOficina]);
 
   const [navOpen, setNavOpen] = useState(true);
 
@@ -3933,6 +4709,10 @@ function ViveresApp({ session }) {
     pivot:     { grupo: "Datos",       titulo: "Análisis pivot",       sub: "Consumo y costo cruzados por embarcación, rubro y período." },
     control_racion: { grupo: "Datos",  titulo: "Control de ración",    sub: "Lo pedido por persona y día, por categoría, contra el objetivo de Ración por persona/día." },
     parametros_dieta: { grupo: "Datos", titulo: "Ración por persona/día", sub: "Mínimo y máximo orientativo por categoría, para avisar si un pedido pide de más o de menos." },
+    oficina_inbox:     { grupo: "Pedido Oficina", titulo: "Pedidos por revisar",  sub: "Pedidos de oficina que esperan revisión antes de pasar a compra." },
+    oficina_nuevo:     { grupo: "Pedido Oficina", titulo: "Nuevo pedido oficina", sub: "Elegí del catálogo los productos y cantidades para la oficina. No usa PAX/días ni control de ración." },
+    oficina_historial: { grupo: "Pedido Oficina", titulo: "Historial oficina",    sub: "Todos los pedidos de oficina cargados, con su estado." },
+    oficina_tracker:   { grupo: "Pedido Oficina", titulo: "Seguimiento oficina",  sub: "Avance de cada pedido de oficina desde la compra hasta la recepción." },
   };
 
   const NAV = [
@@ -3946,6 +4726,12 @@ function ViveresApp({ session }) {
     { titulo: "Seguimiento", items: [
       { id: "tracker", icon: "chart", label: "Seguimiento de entregas", count: 0 },
       { id: "stock", icon: "box", label: "Stock", count: 0 },
+    ]},
+    { titulo: "Pedido Oficina", items: [
+      { id: "oficina_inbox",     icon: "inbox", label: "Pedidos por revisar", count: inboxOficinaCount },
+      { id: "oficina_nuevo",     icon: "cart",  label: "Nuevo pedido",        count: 0 },
+      { id: "oficina_historial", icon: "list",  label: "Historial",           count: 0 },
+      { id: "oficina_tracker",   icon: "chart", label: "Seguimiento",         count: 0 },
     ]},
     { titulo: "Datos", items: [
       { id: "catalogo",     icon: "box",   label: "Catálogo",       count: 0 },
@@ -4057,6 +4843,10 @@ function ViveresApp({ session }) {
             {page === "pivot"     && <PagePivot />}
             {page === "control_racion" && <PageControlRacion />}
             {page === "parametros_dieta" && <PageParametrosDieta notify={notify} userEmail={userEmail} />}
+            {page === "oficina_inbox" && <PageInboxOficina notify={notify} onNeedRefresh={loadCountsOficina} />}
+            {page === "oficina_nuevo" && <PageNuevoOficina notify={notify} onSaved={() => { setPage("oficina_historial"); loadCountsOficina(); }} onCancel={() => setPage("oficina_historial")} />}
+            {page === "oficina_historial" && <PageHistorialOficina onNuevo={() => setPage("oficina_nuevo")} notify={notify} />}
+            {page === "oficina_tracker" && <PageTrackerOficina notify={notify} />}
           </div>
         </div>
       </div>

@@ -4794,7 +4794,7 @@ function ViveresApp({ session }) {
 
       <div className={`shell ${navOpen ? "" : "is-collapsed"}`}>
         <nav className="sidebar">
-          <div className="sidebar-header">
+          <div className="sidebar-header" onClick={() => setPage("inbox")} style={{ cursor: "pointer" }}>
             <img src="/PL.png" alt="PL Offshore" className="sidebar-logo-img" />
             {navOpen && (
               <div>

@@ -43,6 +43,13 @@ const api = {
     if (error) throw error;
     return data || [];
   },
+  // Solo los ítems marcados "Disponible para pedido de oficina" — Pedido
+  // Oficina no debe mostrar el catálogo completo de los barcos.
+  async getCatalogoOficina() {
+    const { data, error } = await supabase.from("viveres_catalogo").select("*").eq("activo", true).eq("disponible_oficina", true).order("categoria").order("descripcion");
+    if (error) throw error;
+    return data || [];
+  },
   async getParametros() {
     const { data, error } = await supabase.from("viveres_parametros_dieta").select("*");
     if (error) throw error;
@@ -2653,7 +2660,7 @@ function PageCatalogo({ notify }) {
   const [savingId, setSavingId] = useState(null);
   const [eliminandoId, setEliminandoId] = useState(null);
   const [editados, setEditados] = useState({}); // id -> campos modificados
-  const [form, setForm] = useState({ codigo: "", categoria: "Almacén", subcategoria: "", temperatura: "Seco", descripcion: "", unidad: "Unidad", unidad_analisis: "Kg", volumen_peso: "1", stock: "0" });
+  const [form, setForm] = useState({ codigo: "", categoria: "Almacén", subcategoria: "", temperatura: "Seco", descripcion: "", unidad: "Unidad", unidad_analisis: "Kg", volumen_peso: "1", stock: "0", disponible_oficina: false });
 
   useEffect(() => { api.getCatalogo().then(d => { setCatalogo(d); setLoading(false); }); }, []);
 
@@ -2716,7 +2723,7 @@ function PageCatalogo({ notify }) {
       if (error) throw error;
       setCatalogo(prev => [...prev, data]);
       setModal(false);
-      setForm({ codigo: "", categoria: "Almacén", subcategoria: "", temperatura: "Seco", descripcion: "", unidad: "Unidad", unidad_analisis: "Kg", volumen_peso: "1", stock: "0" });
+      setForm({ codigo: "", categoria: "Almacén", subcategoria: "", temperatura: "Seco", descripcion: "", unidad: "Unidad", unidad_analisis: "Kg", volumen_peso: "1", stock: "0", disponible_oficina: false });
       notify("Ítem agregado", "success");
     } catch (e) { alert("Error: " + e.message); }
     finally { setSaving(false); }
@@ -2768,6 +2775,7 @@ function PageCatalogo({ notify }) {
                   <th>Unidad análisis</th>
                   <th style={{ width: 70 }}>Stock</th>
                   <th>Vol/Peso</th>
+                  <th style={{ width: 60, textAlign: "center" }} title="Disponible para Pedido Oficina">Oficina</th>
                   <th style={{ width: 70 }}></th>
                 </tr>
               </thead>
@@ -2851,6 +2859,15 @@ function PageCatalogo({ notify }) {
                           style={mod(c, "volumen_peso") ? inStyleMod : inStyle}
                         />
                       </td>
+                      <td style={{ textAlign: "center" }}>
+                        <input
+                          type="checkbox"
+                          checked={!!getVal(c, "disponible_oficina")}
+                          onChange={e => setcampo(c.id, "disponible_oficina", e.target.checked)}
+                          style={{ width: "auto", accentColor: "var(--accent)", cursor: "pointer" }}
+                          title="Disponible para Pedido Oficina"
+                        />
+                      </td>
                       <td>
                         <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                           {hayC && (
@@ -2905,6 +2922,10 @@ function PageCatalogo({ notify }) {
               {form.volumen_peso && parseFloat(form.volumen_peso) !== 1 && (
                 <div className="info-box accent mt8" style={{ fontSize: 11 }}>Ejemplo: 3 {form.unidad} → {(3 * parseFloat(form.volumen_peso)).toFixed(3)} {form.unidad_analisis}</div>
               )}
+              <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14, fontSize: 12, cursor: "pointer" }}>
+                <input type="checkbox" checked={form.disponible_oficina} onChange={e => setF("disponible_oficina", e.target.checked)} style={{ width: "auto", accentColor: "var(--accent)" }} />
+                Disponible para Pedido Oficina
+              </label>
             </div>
             <div className="mftr">
               <button className="btn btn-ghost" onClick={() => setModal(false)}>Cancelar</button>
@@ -4082,12 +4103,19 @@ function PageNuevoOficina({ notify, onSaved, onCancel }) {
   const [solicitantes, setSolicitantes] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
-    Promise.all([api.getCatalogo(), api.getSolicitantes()])
+    Promise.all([api.getCatalogoOficina(), api.getSolicitantes()])
       .then(([cat, sol]) => { setCatalogo(cat); setSolicitantes(sol); })
       .catch(e => notify("Error al cargar datos: " + e.message, "error"))
       .finally(() => setLoading(false));
   }, [notify]);
   if (loading) return <div className="loading"><span className="spin">◌</span> Cargando catálogo...</div>;
+  if (catalogo.length === 0) return (
+    <div className="empty-state">
+      <div style={{ fontSize: 28, marginBottom: 8 }}></div>
+      Sin productos habilitados para Pedido Oficina todavía.<br />
+      Marcalos en Catálogo con la columna "Oficina", o desde "+ Agregar ítem" tildando "Disponible para pedido de oficina".
+    </div>
+  );
   return (
     <FormPedidoOficina
       catalogoInicial={catalogo}

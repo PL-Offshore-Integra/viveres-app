@@ -2805,7 +2805,11 @@ function PageCatalogo({ notify }) {
 //  Mínimo y máximo orientativo por categoría, por persona y por día (según
 //  la planilla de ración a bordo). Se usa para avisar en Nuevo pedido y al
 //  revisar/aprobar si una categoría se pasa de lo estimado.
-function PageParametrosDieta({ notify }) {
+function PageParametrosDieta({ notify, userEmail }) {
+  // Solo nthompson@ploffshore.com puede editar estos valores. El chequeo
+  // real está del lado del servidor (RLS de viveres_parametros_dieta) —
+  // esto solo oculta los controles para el resto.
+  const esAdmin = userEmail === NICOLAS_EMAIL;
   const [parametros, setParametros] = useState([]);
   const [loading, setLoading] = useState(true);
   const [savingGrupo, setSavingGrupo] = useState(null);
@@ -2894,7 +2898,10 @@ function PageParametrosDieta({ notify }) {
   return (
     <div>
       <div className="info-box accent mb12" style={{ fontSize: 12 }}>
-        Mínimo y máximo orientativo por persona y por día, por categoría — de la planilla de ración a bordo. Se usa para avisar en <strong>Nuevo pedido</strong> y al <strong>revisar/aprobar</strong> si una categoría se pasa de lo estimado (es una alerta, no bloquea el pedido). Editá los valores cuando quieras ajustar el criterio.
+        Mínimo y máximo orientativo por persona y por día, por categoría — de la planilla de ración a bordo. Se usa para avisar en <strong>Nuevo pedido</strong>, al <strong>revisar/aprobar</strong> y en <strong>Análisis pivot</strong> si una categoría se pasa de lo estimado (es una alerta, no bloquea el pedido).
+        {esAdmin
+          ? " Editá los valores cuando quieras ajustar el criterio."
+          : " Solo Nicolás Thompson puede editar estos valores."}
       </div>
 
       <div className="table-wrap">
@@ -2905,68 +2912,80 @@ function PageParametrosDieta({ notify }) {
               <th style={{ width: 100, textAlign: "right" }}>Mínimo</th>
               <th style={{ width: 100, textAlign: "right" }}>Máximo</th>
               <th style={{ width: 110 }}>Unidad</th>
-              <th style={{ width: 70 }}></th>
+              {esAdmin && <th style={{ width: 70 }}></th>}
             </tr>
           </thead>
           <tbody>
             {parametros.map(p => (
               <tr key={p.id}>
                 <td style={{ fontWeight: 600 }}>{p.grupo}</td>
-                <td style={{ textAlign: "right" }}>
-                  <input type="number" step="0.01" value={getVal(p, "min") ?? ""} onChange={e => setcampo(p.id, "min", e.target.value)} style={mod(p, "min") ? inStyleMod : inStyle} />
-                </td>
-                <td style={{ textAlign: "right" }}>
-                  <input type="number" step="0.01" value={getVal(p, "max") ?? ""} onChange={e => setcampo(p.id, "max", e.target.value)} style={mod(p, "max") ? inStyleMod : inStyle} />
-                </td>
-                <td>
-                  <select value={getVal(p, "unidad_medida") || "Kg"} onChange={e => setcampo(p.id, "unidad_medida", e.target.value)} style={{ ...inStyle, width: "100%", textAlign: "left" }}>
-                    <option>Kg</option><option>Ltrs</option><option>un</option>
-                  </select>
-                </td>
-                <td style={{ display: "flex", gap: 4 }}>
-                  {tieneCambios(p.id) && (
-                    <button className="btn btn-primary btn-sm" onClick={() => handleGuardarFila(p)} disabled={savingGrupo === p.id}>
-                      {savingGrupo === p.id ? "..." : "✓"}
-                    </button>
-                  )}
-                  <button
-                    onClick={() => handleEliminarFila(p)}
-                    title="Eliminar"
-                    disabled={eliminandoGrupo === p.id}
-                    style={{ background: "none", border: "none", color: "var(--muted2)", cursor: "pointer", fontSize: 14, padding: "3px 5px", borderRadius: 4 }}
-                  >
-                    {eliminandoGrupo === p.id ? "..." : "✕"}
-                  </button>
-                </td>
+                {esAdmin ? (
+                  <>
+                    <td style={{ textAlign: "right" }}>
+                      <input type="number" step="0.01" value={getVal(p, "min") ?? ""} onChange={e => setcampo(p.id, "min", e.target.value)} style={mod(p, "min") ? inStyleMod : inStyle} />
+                    </td>
+                    <td style={{ textAlign: "right" }}>
+                      <input type="number" step="0.01" value={getVal(p, "max") ?? ""} onChange={e => setcampo(p.id, "max", e.target.value)} style={mod(p, "max") ? inStyleMod : inStyle} />
+                    </td>
+                    <td>
+                      <select value={getVal(p, "unidad_medida") || "Kg"} onChange={e => setcampo(p.id, "unidad_medida", e.target.value)} style={{ ...inStyle, width: "100%", textAlign: "left" }}>
+                        <option>Kg</option><option>Ltrs</option><option>un</option>
+                      </select>
+                    </td>
+                    <td style={{ display: "flex", gap: 4 }}>
+                      {tieneCambios(p.id) && (
+                        <button className="btn btn-primary btn-sm" onClick={() => handleGuardarFila(p)} disabled={savingGrupo === p.id}>
+                          {savingGrupo === p.id ? "..." : "✓"}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => handleEliminarFila(p)}
+                        title="Eliminar"
+                        disabled={eliminandoGrupo === p.id}
+                        style={{ background: "none", border: "none", color: "var(--muted2)", cursor: "pointer", fontSize: 14, padding: "3px 5px", borderRadius: 4 }}
+                      >
+                        {eliminandoGrupo === p.id ? "..." : "✕"}
+                      </button>
+                    </td>
+                  </>
+                ) : (
+                  <>
+                    <td className="text-mono" style={{ textAlign: "right" }}>{p.min}</td>
+                    <td className="text-mono" style={{ textAlign: "right" }}>{p.max}</td>
+                    <td style={{ color: "var(--muted)" }}>{p.unidad_medida}</td>
+                  </>
+                )}
               </tr>
             ))}
           </tbody>
         </table>
       </div>
 
-      <div className="card mt16">
-        <div className="card-title">Agregar categoría</div>
-        <div className="form-grid-3">
-          <FG label="Categoría *">
-            <select value={nuevo.grupo} onChange={e => setNuevo(n => ({ ...n, grupo: e.target.value }))}>
-              <option value="">Seleccionar...</option>
-              {CATEGORIAS_CATALOGO.filter(c => !parametros.some(p => p.grupo === c)).map(c => <option key={c}>{c}</option>)}
-            </select>
-          </FG>
-          <FG label="Mínimo"><input type="number" step="0.01" value={nuevo.min} onChange={e => setNuevo(n => ({ ...n, min: e.target.value }))} /></FG>
-          <FG label="Máximo"><input type="number" step="0.01" value={nuevo.max} onChange={e => setNuevo(n => ({ ...n, max: e.target.value }))} /></FG>
+      {esAdmin && (
+        <div className="card mt16">
+          <div className="card-title">Agregar categoría</div>
+          <div className="form-grid-3">
+            <FG label="Categoría *">
+              <select value={nuevo.grupo} onChange={e => setNuevo(n => ({ ...n, grupo: e.target.value }))}>
+                <option value="">Seleccionar...</option>
+                {CATEGORIAS_CATALOGO.filter(c => !parametros.some(p => p.grupo === c)).map(c => <option key={c}>{c}</option>)}
+              </select>
+            </FG>
+            <FG label="Mínimo"><input type="number" step="0.01" value={nuevo.min} onChange={e => setNuevo(n => ({ ...n, min: e.target.value }))} /></FG>
+            <FG label="Máximo"><input type="number" step="0.01" value={nuevo.max} onChange={e => setNuevo(n => ({ ...n, max: e.target.value }))} /></FG>
+          </div>
+          <div className="form-grid-3">
+            <FG label="Unidad">
+              <select value={nuevo.unidad_medida} onChange={e => setNuevo(n => ({ ...n, unidad_medida: e.target.value }))}>
+                <option>Kg</option><option>Ltrs</option><option>un</option>
+              </select>
+            </FG>
+          </div>
+          <div className="form-footer-actions mt12">
+            <button className="btn btn-primary" onClick={handleAgregar} disabled={agregando}>{agregando ? "Guardando..." : "Agregar"}</button>
+          </div>
         </div>
-        <div className="form-grid-3">
-          <FG label="Unidad">
-            <select value={nuevo.unidad_medida} onChange={e => setNuevo(n => ({ ...n, unidad_medida: e.target.value }))}>
-              <option>Kg</option><option>Ltrs</option><option>un</option>
-            </select>
-          </FG>
-        </div>
-        <div className="form-footer-actions mt12">
-          <button className="btn btn-primary" onClick={handleAgregar} disabled={agregando}>{agregando ? "Guardando..." : "Agregar"}</button>
-        </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -3083,6 +3102,7 @@ function LoginPage() {
 //  PAGE PIVOT 
 function PagePivot() {
   const [pedidos,    setPedidos]    = useState([]);
+  const [parametros, setParametrosDieta] = useState([]);
   const [loading,    setLoading]    = useState(true);
   const [error,      setError]      = useState(null);
   const [filas,      setFilas]      = useState("categoria");
@@ -3101,6 +3121,17 @@ function PagePivot() {
   useEffect(() => {
     api.getPedidos({}).then(d => { setPedidos(d); setLoading(false); }).catch(e => { setError(e.message); setLoading(false); });
   }, []);
+
+  // Ración por persona/día (Datos > Ración por persona/día): la referencia
+  // del Excel para comparar contra "Por pax·día" agrupado por Categoría.
+  useEffect(() => {
+    api.getParametros().then(setParametrosDieta).catch(e => console.error("No se pudieron cargar los parámetros de ración:", e.message));
+  }, []);
+  const paramPorCategoria = useMemo(() => Object.fromEntries(parametros.map(p => [p.grupo, p])), [parametros]);
+  // Solo tiene sentido comparar contra el objetivo diario por persona cuando
+  // se está viendo justamente eso: filas = Categoría, columnas = Por pax·día,
+  // métrica = Volumen (kg/L, la misma unidad que la ración de referencia).
+  const comparaConRacion = filas === "categoria" && columnas === "pax_dia" && metrica === "volumen";
 
   const pedidosBase = useMemo(() => pedidos.filter(p => {
     if (filtBuque  && p.base_buque !== filtBuque)  return false;
@@ -3382,6 +3413,11 @@ function PagePivot() {
                           {canExpand && <span style={{color:"var(--muted2)",fontSize:10,width:10,flexShrink:0}}>{isExp?"":""}</span>}
                           <div style={{flex:1,minWidth:0}}>
                             <div style={{fontWeight:600,fontSize:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{fk}</div>
+                            {comparaConRacion && paramPorCategoria[fk] && (
+                              <div style={{fontSize:9,color:"var(--muted)",fontFamily:"var(--mono)",marginTop:1}}>
+                                Objetivo {paramPorCategoria[fk].min}–{paramPorCategoria[fk].max} {paramPorCategoria[fk].unidad_medida}/p·d
+                              </div>
+                            )}
                             <div style={{marginTop:3,height:2,borderRadius:1,background:"var(--border)"}}>
                               <div style={{height:"100%",width:`${barPct*100}%`,background:"var(--accent)",borderRadius:1}}/>
                             </div>
@@ -3390,8 +3426,20 @@ function PagePivot() {
                       </td>
                       {colKeys.map(ck => {
                         const v = tabla.get(fk)?.get(ck)||0;
+                        const max = comparaConRacion ? paramPorCategoria[fk]?.max : null;
+                        const excede = max != null && v > max;
                         return (
-                          <td key={ck} style={{padding:"7px 10px",textAlign:"right",background:heatBg(v,maxCell),borderBottom:"1px solid var(--border)"}}>
+                          <td
+                            key={ck}
+                            title={excede ? `Supera el objetivo de ${max} ${paramPorCategoria[fk].unidad_medida}/persona/día` : undefined}
+                            style={{
+                              padding:"7px 10px",textAlign:"right",
+                              background: excede ? "rgba(220,38,38,.14)" : heatBg(v,maxCell),
+                              borderBottom:"1px solid var(--border)",
+                              boxShadow: excede ? "inset 3px 0 0 var(--danger)" : "none",
+                            }}
+                          >
+                            {excede && <span style={{color:"var(--danger)",fontWeight:700,marginRight:3}}>▲</span>}
                             {fmtVal(v)}
                           </td>
                         );
@@ -3616,7 +3664,7 @@ function ViveresApp({ session }) {
             {page === "catalogo"  && <PageCatalogo notify={notify} />}
             {page === "solicitantes" && <PageSolicitantes notify={notify} />}
             {page === "pivot"     && <PagePivot />}
-            {page === "parametros_dieta" && <PageParametrosDieta notify={notify} />}
+            {page === "parametros_dieta" && <PageParametrosDieta notify={notify} userEmail={userEmail} />}
           </div>
         </div>
       </div>

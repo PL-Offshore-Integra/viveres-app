@@ -3993,11 +3993,11 @@ function PageControlRacion() {
 //  todo en sus propias tablas (viveres_pedidos_oficina / *_items) para no
 //  mezclarse con Nuevo pedido / Historial / Tracker / Análisis pivot de los
 //  barcos.
-function FormPedidoOficina({ catalogoInicial, solicitantes = [], onSave, onCancel, notify }) {
+function FormPedidoOficina({ catalogoInicial, onSave, onCancel, notify }) {
   const [catalogo] = useState(catalogoInicial || []);
   const [saving, setSaving] = useState(false);
   const [cabecera, setCabecera] = useState({
-    solicitado_por: "",
+    solicitado_por: "Elda",
     fecha_pedido: new Date().toISOString().split("T")[0],
     observaciones: "",
   });
@@ -4034,13 +4034,7 @@ function FormPedidoOficina({ catalogoInicial, solicitantes = [], onSave, onCance
       <div className="card">
         <div className="card-title">Datos del pedido de oficina</div>
         <div className="form-grid-3">
-          <FG label="Solicitado por *">
-            <select value={cabecera.solicitado_por} onChange={e => setCab("solicitado_por", e.target.value)}>
-              <option value="">Seleccionar...</option>
-              {solicitantes.map(s => <option key={s.id} value={s.nombre}>{s.nombre}</option>)}
-              {cabecera.solicitado_por && !solicitantes.some(s => s.nombre === cabecera.solicitado_por) && <option value={cabecera.solicitado_por}>{cabecera.solicitado_por}</option>}
-            </select>
-          </FG>
+          <FG label="Solicitado por *"><input value={cabecera.solicitado_por} disabled /></FG>
           <FG label="Fecha del pedido"><input type="date" value={cabecera.fecha_pedido} onChange={e => setCab("fecha_pedido", e.target.value)} /></FG>
         </div>
         <FG label="Observaciones"><textarea value={cabecera.observaciones} onChange={e => setCab("observaciones", e.target.value)} placeholder="Notas adicionales..." /></FG>
@@ -4103,11 +4097,10 @@ function FormPedidoOficina({ catalogoInicial, solicitantes = [], onSave, onCance
 
 function PageNuevoOficina({ notify, onSaved, onCancel }) {
   const [catalogo, setCatalogo] = useState([]);
-  const [solicitantes, setSolicitantes] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
-    Promise.all([api.getCatalogoOficina(), api.getSolicitantes()])
-      .then(([cat, sol]) => { setCatalogo(cat); setSolicitantes(sol); })
+    api.getCatalogoOficina()
+      .then(cat => setCatalogo(cat))
       .catch(e => notify("Error al cargar datos: " + e.message, "error"))
       .finally(() => setLoading(false));
   }, [notify]);
@@ -4122,7 +4115,6 @@ function PageNuevoOficina({ notify, onSaved, onCancel }) {
   return (
     <FormPedidoOficina
       catalogoInicial={catalogo}
-      solicitantes={solicitantes}
       onSave={async (cab, items) => { await api.crearPedidoOficina(cab, items); onSaved(); }}
       onCancel={onCancel}
       notify={notify}

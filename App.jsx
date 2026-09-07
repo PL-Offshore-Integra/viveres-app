@@ -3102,7 +3102,6 @@ function LoginPage() {
 //  PAGE PIVOT 
 function PagePivot() {
   const [pedidos,    setPedidos]    = useState([]);
-  const [parametros, setParametrosDieta] = useState([]);
   const [loading,    setLoading]    = useState(true);
   const [error,      setError]      = useState(null);
   const [filas,      setFilas]      = useState("categoria");
@@ -3114,24 +3113,13 @@ function PagePivot() {
   const [filtHasta,  setFiltHasta]  = useState("");
   const [busqueda,   setBusqueda]   = useState("");
   const [expandidos, setExpandidos] = useState({});
-  //  Multi-selección de pedidos 
+  //  Multi-selección de pedidos
   const [seleccionados, setSeleccionados] = useState(new Set()); // Set de ids
   const [modoSel, setModoSel] = useState(false); // false = todos los pedidos filtrados
 
   useEffect(() => {
     api.getPedidos({}).then(d => { setPedidos(d); setLoading(false); }).catch(e => { setError(e.message); setLoading(false); });
   }, []);
-
-  // Ración por persona/día (Datos > Ración por persona/día): la referencia
-  // del Excel para comparar contra "Por pax·día" agrupado por Categoría.
-  useEffect(() => {
-    api.getParametros().then(setParametrosDieta).catch(e => console.error("No se pudieron cargar los parámetros de ración:", e.message));
-  }, []);
-  const paramPorCategoria = useMemo(() => Object.fromEntries(parametros.map(p => [p.grupo, p])), [parametros]);
-  // Solo tiene sentido comparar contra el objetivo diario por persona cuando
-  // se está viendo justamente eso: filas = Categoría, columnas = Por pax·día,
-  // métrica = Volumen (kg/L, la misma unidad que la ración de referencia).
-  const comparaConRacion = filas === "categoria" && columnas === "pax_dia" && metrica === "volumen";
 
   const pedidosBase = useMemo(() => pedidos.filter(p => {
     if (filtBuque  && p.base_buque !== filtBuque)  return false;
@@ -3413,9 +3401,365 @@ function PagePivot() {
                           {canExpand && <span style={{color:"var(--muted2)",fontSize:10,width:10,flexShrink:0}}>{isExp?"":""}</span>}
                           <div style={{flex:1,minWidth:0}}>
                             <div style={{fontWeight:600,fontSize:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{fk}</div>
-                            {comparaConRacion && paramPorCategoria[fk] && (
+                            <div style={{marginTop:3,height:2,borderRadius:1,background:"var(--border)"}}>
+                              <div style={{height:"100%",width:`${barPct*100}%`,background:"var(--accent)",borderRadius:1}}/>
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+                      {colKeys.map(ck => {
+                        const v = tabla.get(fk)?.get(ck)||0;
+                        return (
+                          <td
+                            key={ck}
+                            style={{
+                              padding:"7px 10px",textAlign:"right",
+                              background: heatBg(v,maxCell),
+                              borderBottom:"1px solid var(--border)",
+                            }}
+                          >
+                            {fmtVal(v)}
+                          </td>
+                        );
+                      })}
+                      <td style={{padding:"7px 10px",textAlign:"right",fontWeight:700,background:"#F0F4F8",position:"sticky",right:0,borderLeft:"1px solid var(--border)"}}>
+                        {fmtVal(tot)}
+                      </td>
+                    </tr>
+                  );
+
+                  const subRows = (isExp && subData)
+                    ? subData.keys.map(sk => {
+                        const sTot = [...(subData.map.get(sk)?.values()||[])].reduce((s,v)=>s+v,0);
+                        return (
+                          <tr key={`${fk}__${sk}`} style={{background:"#FAFBFD",borderBottom:"1px solid var(--border)"}}>
+                            <td style={{padding:"5px 12px 5px 36px",position:"sticky",left:0,background:"#FAFBFD",borderRight:"1px solid var(--border)"}}>
+                              <span style={{fontSize:11,color:"var(--text)"}}>↳ </span>
+                              <span style={{fontSize:11,color:"var(--text)",fontWeight:500}}>{sk}</span>
+                            </td>
+                            {colKeys.map(ck => {
+                              const v = subData.map.get(sk)?.get(ck)||0;
+                              return (
+                                <td key={ck} style={{padding:"5px 10px",textAlign:"right",fontSize:11,background:v?heatBg(v,maxCell*0.5):"transparent"}}>
+                                  {fmtVal(v)}
+                                </td>
+                              );
+                            })}
+                            <td style={{padding:"5px 10px",textAlign:"right",fontWeight:600,fontSize:11,background:"#F0F4F8",position:"sticky",right:0,borderLeft:"1px solid var(--border)"}}>
+                              {fmtVal(sTot)}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    : [];
+
+                  return [mainRow, ...subRows];
+                })}
+              </tbody>
+              <tfoot>
+                <tr style={{background:"#1A2A46",position:"sticky",bottom:0}}>
+                  <td style={{padding:"8px 12px",color:"#fff",fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:".4px",position:"sticky",left:0,background:"#1A2A46"}}>
+                    TOTAL GENERAL
+                  </td>
+                  {colKeys.map(ck=>{
+                    const colTot = filaKeys.reduce((s,fk)=>s+(tabla.get(fk)?.get(ck)||0),0);
+                    return (
+                      <td key={ck} style={{padding:"8px 10px",textAlign:"right",color:"rgba(255,255,255,.9)"}}>
+                        {fmtVal(colTot)}
+                      </td>
+                    );
+                  })}
+                  <td style={{padding:"8px 10px",textAlign:"right",color:"#D4AA3A",fontWeight:800,position:"sticky",right:0,background:"#0B1629"}}>
+                    {fmtVal(totalGlobal)}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Control de ración: la misma comparación que se podía ver dentro de
+// Análisis pivot (Categoría × Por pax·día × Volumen), pero como pantalla
+// propia en "Datos" — fija, sin los selectores de filas/columnas/métrica,
+// para no mezclarla con el pivot de uso general.
+function PageControlRacion() {
+  const [pedidos,    setPedidos]    = useState([]);
+  const [parametros, setParametros] = useState([]);
+  const [loading,    setLoading]    = useState(true);
+  const [error,      setError]      = useState(null);
+  const [filtBuque,  setFiltBuque]  = useState("");
+  const [filtEstado, setFiltEstado] = useState("");
+  const [filtDesde,  setFiltDesde]  = useState("");
+  const [filtHasta,  setFiltHasta]  = useState("");
+  const [busqueda,   setBusqueda]   = useState("");
+  const [expandidos, setExpandidos] = useState({});
+  //  Multi-selección de pedidos
+  const [seleccionados, setSeleccionados] = useState(new Set()); // Set de ids
+  const [modoSel, setModoSel] = useState(false); // false = todos los pedidos filtrados
+
+  useEffect(() => {
+    api.getPedidos({}).then(d => { setPedidos(d); setLoading(false); }).catch(e => { setError(e.message); setLoading(false); });
+  }, []);
+  useEffect(() => {
+    api.getParametros().then(setParametros).catch(e => console.error("No se pudieron cargar los parámetros de ración:", e.message));
+  }, []);
+  const paramPorCategoria = useMemo(() => Object.fromEntries(parametros.map(p => [p.grupo, p])), [parametros]);
+
+  const pedidosBase = useMemo(() => pedidos.filter(p => {
+    if (filtBuque  && p.base_buque !== filtBuque)  return false;
+    if (filtEstado && p.status     !== filtEstado)  return false;
+    if (filtDesde  && (p.fecha_pedido||"") < filtDesde) return false;
+    if (filtHasta  && (p.fecha_pedido||"") > filtHasta) return false;
+    return true;
+  }), [pedidos, filtBuque, filtEstado, filtDesde, filtHasta]);
+
+  // Si modoSel activo, solo los marcados; si no, todos los filtrados
+  const pedidosFilt = useMemo(() =>
+    modoSel && seleccionados.size > 0
+      ? pedidosBase.filter(p => seleccionados.has(p.id))
+      : pedidosBase,
+  [pedidosBase, modoSel, seleccionados]);
+
+  const buques  = useMemo(() => [...new Set(pedidos.map(p => p.base_buque).filter(Boolean))].sort(), [pedidos]);
+  const estados = useMemo(() => [...new Set(pedidos.map(p => p.status).filter(Boolean))].sort(), [pedidos]);
+
+  //  Motor: siempre Categoría (filas) × Pedido (columnas), en kg/L por persona·día
+  const { tabla, filaKeys, colKeys } = useMemo(() => {
+    const map = new Map();
+    const eventos = [];
+
+    pedidosFilt.forEach(p => {
+      const pax = p.pax || 1, dias = p.dias || 1, paxDias = pax * dias;
+      const colKey = `${(p.fecha_pedido||"—").slice(0,10)} · ${p.base_buque||"?"}`;
+
+      // Usamos lo AUTORIZADO por el comprador cuando ya está aprobado; si
+      // todavía no se aprobó, no hay autorizado y se usa lo pedido.
+      (p.viveres_pedido_items || []).filter(it => cantEfectiva(it) > 0).forEach(it => {
+        const valor = (cantEfectiva(it) * (it.volumen_peso||1)) / paxDias;
+        const filaKey = it.categoria || "Sin categoría";
+
+        if (busqueda && !filaKey.toLowerCase().includes(busqueda.toLowerCase()) &&
+            !(it.descripcion||"").toLowerCase().includes(busqueda.toLowerCase())) return;
+
+        if (!map.has(filaKey)) map.set(filaKey, new Map());
+        const row = map.get(filaKey);
+        row.set(colKey, (row.get(colKey)||0) + valor);
+        eventos.push({ filaKey, colKey, it, p, valor });
+      });
+    });
+
+    const filaKeys = [...map.keys()].sort((a,b) => {
+      const tA = [...map.get(a).values()].reduce((s,v)=>s+v,0);
+      const tB = [...map.get(b).values()].reduce((s,v)=>s+v,0);
+      return tB - tA;
+    });
+    const colSet = new Set(); eventos.forEach(e => colSet.add(e.colKey));
+    const colKeys = [...colSet].sort();
+    return { tabla: map, filaKeys, colKeys };
+  }, [pedidosFilt, busqueda]);
+
+  //  Desglose por ítem dentro de una categoría
+  const buildSubFilas = useCallback((fk) => {
+    const subMap = new Map();
+    pedidosFilt.forEach(p => {
+      const pax = p.pax||1, dias = p.dias||1, paxDias = pax*dias;
+      const colKey = `${(p.fecha_pedido||"—").slice(0,10)} · ${p.base_buque||"?"}`;
+      (p.viveres_pedido_items||[]).filter(it => cantEfectiva(it) > 0 && (it.categoria||"Sin categoría") === fk).forEach(it => {
+        const valor = (cantEfectiva(it) * (it.volumen_peso||1)) / paxDias;
+        const desc = it.descripcion || "—";
+        if (!subMap.has(desc)) subMap.set(desc, new Map());
+        subMap.get(desc).set(colKey, (subMap.get(desc).get(colKey)||0) + valor);
+      });
+    });
+    const subKeys = [...subMap.keys()].sort((a,b) => {
+      const tA = [...(subMap.get(a)?.values()||[])].reduce((s,v)=>s+v,0);
+      const tB = [...(subMap.get(b)?.values()||[])].reduce((s,v)=>s+v,0);
+      return tB - tA;
+    });
+    return { map: subMap, keys: subKeys };
+  }, [pedidosFilt]);
+
+  //  Helpers
+  const totalFila = (fk) => [...(tabla.get(fk)?.values()||[])].reduce((s,v)=>s+v,0);
+  const maxTotal  = useMemo(() => Math.max(1, ...filaKeys.map(f => totalFila(f))), [filaKeys, tabla]);
+  const maxCell   = useMemo(() => { let m=1; filaKeys.forEach(fk => colKeys.forEach(ck => { const v=tabla.get(fk)?.get(ck)||0; if(v>m) m=v; })); return m; }, [filaKeys,colKeys,tabla]);
+
+  const heatBg = (v, max) => {
+    if (!v) return "transparent";
+    const pct = Math.min(v/max, 1);
+    return `rgba(35,92,150,${0.07 + pct * 0.28})`;
+  };
+
+  const fmtVal = (v) => {
+    if (!v || v < 0.0001) return <span style={{ color:"var(--muted2)", fontSize:11 }}>—</span>;
+    const num  = v < 0.01 ? v.toFixed(4) : v < 10 ? v.toFixed(2) : v % 1 === 0 ? v.toFixed(0) : v.toFixed(1);
+    return <span style={{ fontFamily:"var(--mono)", fontSize:12, fontWeight:600 }}>{num}<span style={{ fontSize:9, color:"var(--muted)", marginLeft:1 }}>/p·d</span></span>;
+  };
+
+  const totalGlobal = filaKeys.reduce((s,f)=>s+totalFila(f),0);
+
+  if (loading) return <div className="state-empty">Cargando historial de pedidos...</div>;
+  if (error)   return <div className="state-empty" style={{color:"var(--danger)"}}>Error: {error}</div>;
+
+  return (
+    <div>
+      <div className="info-box accent" style={{marginBottom:14}}>
+        Compara lo pedido (autorizado si el pedido ya está aprobado) contra el objetivo de <strong>Ración por persona/día</strong>, en kg/L por persona y día. Lo que supera el máximo se resalta en rojo — es un aviso para redefinir cantidades, no bloquea nada.
+      </div>
+
+      {/*  Selector de pedidos  */}
+      <div className="card" style={{marginBottom:14}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom: modoSel ? 10 : 0}}>
+          <div style={{fontWeight:700,fontSize:13,color:"var(--navy)"}}>
+             Pedidos a analizar
+            <span style={{fontWeight:400,fontSize:11,color:"var(--muted)",marginLeft:8}}>
+              {modoSel && seleccionados.size > 0
+                ? `${seleccionados.size} pedido${seleccionados.size>1?"s":""} seleccionado${seleccionados.size>1?"s":""}`
+                : `${pedidosBase.length} pedido${pedidosBase.length!==1?"s":""} (todos los filtrados)`}
+            </span>
+          </div>
+          <div style={{display:"flex",gap:6}}>
+            {modoSel && seleccionados.size > 0 &&
+              <button className="btn btn-ghost btn-sm" onClick={()=>setSeleccionados(new Set())}>Limpiar selección</button>
+            }
+            <button
+              className={`btn btn-sm ${modoSel ? "btn-primary" : "btn-ghost"}`}
+              onClick={()=>{ setModoSel(v=>!v); if(modoSel) setSeleccionados(new Set()); }}
+            >
+              {modoSel ? "✓ Selección activa" : "Seleccionar pedidos"}
+            </button>
+          </div>
+        </div>
+
+        {modoSel && (
+          <div>
+            <div style={{display:"flex",gap:6,marginBottom:8}}>
+              <button className="btn btn-ghost btn-sm" onClick={()=>setSeleccionados(new Set(pedidosBase.map(p=>p.id)))}>Seleccionar todos</button>
+              <button className="btn btn-ghost btn-sm" onClick={()=>setSeleccionados(new Set())}>Deseleccionar todos</button>
+            </div>
+            <div style={{maxHeight:220,overflowY:"auto",display:"flex",flexDirection:"column",gap:4}}>
+              {pedidosBase.map(p => {
+                const checked = seleccionados.has(p.id);
+                const itemsCnt = (p.viveres_pedido_items||[]).filter(it=>(it.cantidad_pedida||0)>0).length;
+                return (
+                  <label key={p.id} style={{display:"flex",alignItems:"center",gap:10,padding:"7px 10px",borderRadius:6,border:`1px solid ${checked?"var(--accent)":"var(--border)"}`,background:checked?"#EFF6FF":"var(--surface)",cursor:"pointer",transition:"all .12s"}}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={()=>setSeleccionados(prev=>{
+                        const next = new Set(prev);
+                        checked ? next.delete(p.id) : next.add(p.id);
+                        return next;
+                      })}
+                      style={{width:"auto",accentColor:"var(--accent)"}}
+                    />
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                        <span style={{fontWeight:600,fontSize:12}}>{p.base_buque || "Sin buque"}</span>
+                        <span style={{fontSize:11,color:"var(--muted)",fontFamily:"var(--mono)"}}>{(p.fecha_pedido||"").slice(0,10)}</span>
+                        <span style={{fontSize:10,padding:"1px 6px",borderRadius:4,background:"#DBEAFE",color:"#1E40AF",fontWeight:600}}>{p.pax} PAX · {p.dias} días</span>
+                        {p.solicitado_por && <span style={{fontSize:10,color:"var(--muted)"}}>{p.solicitado_por}</span>}
+                      </div>
+                    </div>
+                    <span style={{fontSize:10,color:"var(--muted)",whiteSpace:"nowrap"}}>{itemsCnt} ítems</span>
+                  </label>
+                );
+              })}
+              {pedidosBase.length === 0 && <div style={{fontSize:12,color:"var(--muted)",padding:"8px 0"}}>Sin pedidos para los filtros actuales</div>}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Filtros */}
+      <div className="filter-row" style={{marginBottom:14}}>
+        <select value={filtBuque} onChange={e=>setFiltBuque(e.target.value)} style={{minWidth:160}}>
+          <option value="">Todos los buques</option>
+          {buques.map(b=><option key={b}>{b}</option>)}
+        </select>
+        <select value={filtEstado} onChange={e=>setFiltEstado(e.target.value)} style={{minWidth:140}}>
+          <option value="">Todos los estados</option>
+          {estados.map(s=><option key={s}>{s}</option>)}
+        </select>
+        <input type="date" value={filtDesde} onChange={e=>setFiltDesde(e.target.value)} style={{width:140}} />
+        <span style={{fontSize:11,color:"var(--muted)"}}>→</span>
+        <input type="date" value={filtHasta} onChange={e=>setFiltHasta(e.target.value)} style={{width:140}} />
+        <input value={busqueda} onChange={e=>setBusqueda(e.target.value)} placeholder="Buscar ítem / categoría..." style={{flex:1,minWidth:160}} />
+        {(filtBuque||filtEstado||filtDesde||filtHasta||busqueda) && (
+          <button className="btn btn-ghost btn-sm" onClick={()=>{setFiltBuque("");setFiltEstado("");setFiltDesde("");setFiltHasta("");setBusqueda("");}}>✕ Limpiar</button>
+        )}
+      </div>
+
+      {/* KPIs rápidos */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:14}}>
+        {[
+          {l:"Pedidos",       v:pedidosFilt.length},
+          {l:"Categorías",    v:filaKeys.length},
+          {l:"Columnas",      v:colKeys.length},
+          {l:"Con objetivo definido", v:`${filaKeys.filter(fk=>paramPorCategoria[fk]).length}/${filaKeys.length}`},
+        ].map(k=>(
+          <div key={k.l} className="card" style={{padding:"10px 14px"}}>
+            <div style={{fontSize:10,color:"var(--muted)",fontWeight:700,textTransform:"uppercase",letterSpacing:".5px",marginBottom:3}}>{k.l}</div>
+            <div style={{fontSize:20,fontWeight:800,fontFamily:"var(--mono)",color:"var(--navy)"}}>{k.v}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Tabla */}
+      {filaKeys.length === 0
+        ? <div className="state-empty">Sin datos para los filtros seleccionados</div>
+        : (
+        <div className="card">
+          <div className="card-title" style={{fontSize:12}}>
+            Categoría
+            <span style={{fontWeight:400,color:"var(--muted)",margin:"0 6px"}}>×</span>
+            Pedido
+            <span style={{fontWeight:400,color:"var(--muted)",fontSize:11,marginLeft:8}}>· kg/L por persona·día</span>
+            <span style={{fontWeight:400,color:"var(--muted2)",fontSize:10,marginLeft:8}}>({filaKeys.length} filas · {colKeys.length} col.)</span>
+          </div>
+          <div className="table-wrap" style={{maxHeight:580,overflowX:"auto",overflowY:"auto"}}>
+            <table style={{borderCollapse:"collapse",fontSize:12,minWidth:"100%"}}>
+              <thead>
+                <tr style={{position:"sticky",top:0,zIndex:4}}>
+                  <th style={{minWidth:220,textAlign:"left",padding:"8px 12px",background:"#1A2A46",color:"#fff",fontWeight:700,fontSize:11,letterSpacing:".4px",textTransform:"uppercase",position:"sticky",left:0,zIndex:5}}>
+                    Categoría
+                  </th>
+                  {colKeys.map(ck=>(
+                    <th key={ck} title={ck} style={{minWidth:120,textAlign:"right",padding:"8px 10px",background:"#1A2A46",color:"rgba(255,255,255,.7)",fontWeight:600,fontSize:10,letterSpacing:".3px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:150}}>
+                      {ck.length>18?ck.slice(0,18)+"…":ck}
+                    </th>
+                  ))}
+                  <th style={{minWidth:100,textAlign:"right",padding:"8px 10px",background:"#0B1629",color:"var(--gold-light,#D4AA3A)",fontWeight:800,fontSize:11,letterSpacing:".4px",textTransform:"uppercase",position:"sticky",right:0}}>
+                    TOTAL
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {filaKeys.flatMap(fk => {
+                  const tot = totalFila(fk);
+                  const barPct = Math.min(tot/maxTotal, 1);
+                  const isExp = !!expandidos[fk];
+                  const subData = isExp ? buildSubFilas(fk) : null;
+                  const objetivo = paramPorCategoria[fk];
+
+                  const mainRow = (
+                    <tr
+                      key={fk}
+                      style={{cursor:"pointer", borderBottom:"1px solid var(--border)"}}
+                      onClick={()=>setExpandidos(prev=>({...prev,[fk]:!prev[fk]}))}
+                    >
+                      <td style={{padding:"8px 12px",background:"var(--surface)",position:"sticky",left:0,zIndex:2,borderRight:"1px solid var(--border)"}}>
+                        <div style={{display:"flex",alignItems:"center",gap:7}}>
+                          <span style={{color:"var(--muted2)",fontSize:10,width:10,flexShrink:0}}>{isExp?"":""}</span>
+                          <div style={{flex:1,minWidth:0}}>
+                            <div style={{fontWeight:600,fontSize:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{fk}</div>
+                            {objetivo && (
                               <div style={{fontSize:9,color:"var(--muted)",fontFamily:"var(--mono)",marginTop:1}}>
-                                Objetivo {paramPorCategoria[fk].min}–{paramPorCategoria[fk].max} {paramPorCategoria[fk].unidad_medida}/p·d
+                                Objetivo {objetivo.min}–{objetivo.max} {objetivo.unidad_medida}/p·d
                               </div>
                             )}
                             <div style={{marginTop:3,height:2,borderRadius:1,background:"var(--border)"}}>
@@ -3426,12 +3770,11 @@ function PagePivot() {
                       </td>
                       {colKeys.map(ck => {
                         const v = tabla.get(fk)?.get(ck)||0;
-                        const max = comparaConRacion ? paramPorCategoria[fk]?.max : null;
-                        const excede = max != null && v > max;
+                        const excede = objetivo?.max != null && v > objetivo.max;
                         return (
                           <td
                             key={ck}
-                            title={excede ? `Supera el objetivo de ${max} ${paramPorCategoria[fk].unidad_medida}/persona/día` : undefined}
+                            title={excede ? `Supera el objetivo de ${objetivo.max} ${objetivo.unidad_medida}/persona/día` : undefined}
                             style={{
                               padding:"7px 10px",textAlign:"right",
                               background: excede ? "rgba(220,38,38,.14)" : heatBg(v,maxCell),
@@ -3542,6 +3885,7 @@ function ViveresApp({ session }) {
     catalogo:  { grupo: "Datos",       titulo: "Catálogo de víveres",  sub: "Artículos habilitados, con unidad, rubro y precio de referencia." },
     solicitantes: { grupo: "Datos",    titulo: "Solicitantes",         sub: "Nombres habilitados para crear pedidos. Estandarizá quién puede solicitar víveres." },
     pivot:     { grupo: "Datos",       titulo: "Análisis pivot",       sub: "Consumo y costo cruzados por embarcación, rubro y período." },
+    control_racion: { grupo: "Datos",  titulo: "Control de ración",    sub: "Lo pedido por persona y día, por categoría, contra el objetivo de Ración por persona/día." },
     parametros_dieta: { grupo: "Datos", titulo: "Ración por persona/día", sub: "Mínimo y máximo orientativo por categoría, para avisar si un pedido pide de más o de menos." },
   };
 
@@ -3561,6 +3905,7 @@ function ViveresApp({ session }) {
       { id: "catalogo",     icon: "box",   label: "Catálogo",       count: 0 },
       { id: "solicitantes", icon: "users", label: "Solicitantes",   count: 0 },
       { id: "pivot",        icon: "grid",  label: "Análisis pivot", count: 0 },
+      { id: "control_racion", icon: "grid", label: "Control de ración", count: 0 },
       { id: "parametros_dieta", icon: "grid", label: "Ración por persona/día", count: 0 },
     ]},
   ];
@@ -3664,6 +4009,7 @@ function ViveresApp({ session }) {
             {page === "catalogo"  && <PageCatalogo notify={notify} />}
             {page === "solicitantes" && <PageSolicitantes notify={notify} />}
             {page === "pivot"     && <PagePivot />}
+            {page === "control_racion" && <PageControlRacion />}
             {page === "parametros_dieta" && <PageParametrosDieta notify={notify} userEmail={userEmail} />}
           </div>
         </div>

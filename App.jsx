@@ -904,6 +904,7 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
   const [saving, setSaving] = useState(false);
   const [itemsEdit, setItemsEdit] = useState([]);
   const [aprobadoPor, setAprobadoPor] = useState("");
+  const [parametros, setParametros] = useState([]);
 
   useEffect(() => {
     // cantidad_pedida (lo que cargó el requisitor) nunca se toca acá.
@@ -916,10 +917,34 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
     setLoading(false);
   }, [pedido]);
 
+  // Ración por persona/día (Datos > Ración por persona/día): para avisar,
+  // sin bloquear, si lo autorizado en una categoría se pasa del máximo
+  // orientativo. Es solo una alerta — el comprador decide si aprueba igual.
+  useEffect(() => {
+    api.getParametros().then(setParametros).catch(e => console.error("No se pudieron cargar los parámetros de ración:", e.message));
+  }, []);
+
   const itemsVisibles = itemsEdit.filter(it => !it._eliminado);
   const huboCambios = itemsEdit.some(
     it => it._eliminado || it.cantidad_autorizada !== it.cantidad_pedida
   );
+
+  // Cuánto es, por persona y por día, lo autorizado en cada categoría —
+  // mismo cálculo que "Control de dieta" en Nuevo pedido, pero sobre lo
+  // que se está por aprobar en vez de sobre lo que se cargó al pedir.
+  const paxDias = (pedido.pax || 0) * (pedido.dias || 0);
+  const dietaPedido = {};
+  itemsVisibles.forEach(it => {
+    const cant = (it.cantidad_autorizada || 0) * (it.volumen_peso || 1);
+    dietaPedido[it.categoria] = (dietaPedido[it.categoria] || 0) + cant;
+  });
+  if (paxDias > 0) Object.keys(dietaPedido).forEach(cat => { dietaPedido[cat] = dietaPedido[cat] / paxDias; });
+  const excedidas = {}; // categoria -> parámetro excedido
+  parametros.forEach(p => {
+    const val = dietaPedido[p.grupo];
+    if (val != null && p.max != null && val > p.max) excedidas[p.grupo] = { val, ...p };
+  });
+  const hayExcedidas = Object.keys(excedidas).length > 0;
 
   const setCantidad = (id, val) => {
     setItemsEdit(prev =>
@@ -1034,6 +1059,17 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
                 </div>
               )}
 
+              {hayExcedidas && (
+                <div className="info-box" style={{ fontSize: 12, marginBottom: 12, background: "#FEF2F2", border: "1px solid #FECACA", color: "#991B1B" }}>
+                  <div style={{ fontWeight: 700, marginBottom: 4 }}>Hay categorías por encima de la ración estimada por persona/día — revisá las cantidades marcadas en rojo:</div>
+                  {Object.entries(excedidas).map(([cat, p]) => (
+                    <div key={cat} style={{ fontFamily: "var(--mono)" }}>
+                      {cat}: {p.val.toFixed(2)} {p.unidad_medida} — supera el máximo de {p.max} {p.unidad_medida} por persona/día.
+                    </div>
+                  ))}
+                </div>
+              )}
+
               <div className="table-wrap">
                 <table className="items-edit">
                   <thead>
@@ -1055,16 +1091,20 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
                     ) : (
                       itemsEdit.map(it => {
                         const modificado = !it._eliminado && it.cantidad_autorizada !== it.cantidad_pedida;
+                        const excedido = !it._eliminado && excedidas[it.categoria];
                         return (
                           <tr
                             key={it.id}
                             style={{
                               opacity: it._eliminado ? 0.45 : 1,
                               background: it._eliminado ? "#FEF2F2" : modificado ? "#FFFBEB" : "inherit",
+                              borderLeft: excedido ? "3px solid var(--danger)" : "3px solid transparent",
                               transition: "all .15s",
                             }}
                           >
-                            <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.categoria}</td>
+                            <td style={{ fontSize: 11, color: excedido ? "var(--danger)" : "var(--muted)", fontWeight: excedido ? 700 : 400 }} title={excedido ? `Supera la ración estimada de ${excedido.max} ${excedido.unidad_medida} por persona/día` : undefined}>
+                              {excedido && "▲ "}{it.categoria}
+                            </td>
                             <td><TempBadge temp={it.temperatura} /></td>
                             <td style={{
                               fontWeight: 500, fontSize: 12,
@@ -2201,6 +2241,24 @@ function PageMovimientoStock({ notify, userEmail }) {
   );
 }
 
+//  PAGE: STOCK (unifica "Stock vuelta a puerto" y "Movimiento stock en puerto"
+//  en una sola sección del menú, con pestañas para pasar de una a otra sin
+//  perder el lugar).
+function PageStock({ notify, userEmail }) {
+  const [tab, setTab] = useState("vuelta");
+  return (
+    <div>
+      <div className="tabs-row">
+        <div className={`tab ${tab === "vuelta" ? "active" : ""}`} onClick={() => setTab("vuelta")}>Vuelta a puerto</div>
+        <div className={`tab ${tab === "movimiento" ? "active" : ""}`} onClick={() => setTab("movimiento")}>Movimiento en puerto</div>
+      </div>
+      {tab === "vuelta"
+        ? <PageStockVuelta notify={notify} userEmail={userEmail} />
+        : <PageMovimientoStock notify={notify} userEmail={userEmail} />}
+    </div>
+  );
+}
+
 //  PAGE: INBOX
 function PageInbox({ notify, onNeedRefresh }) {
   const [pedidos, setPedidos] = useState([]);
@@ -2344,7 +2402,7 @@ function PageHistorial({ onNuevo, notify }) {
 }
 
 //  PAGE: CATÁLOGO 
-const CATEGORIAS_CATALOGO = ["Almacén","Bebidas","Carnicería","Electro","Fiambrería","Frutas","Huevos","Lácteos","Limpieza","Pan","Pastas","Pescadería","Quesos","Snack y Postres","Verduras","Otro"];
+const CATEGORIAS_CATALOGO = ["Almacén","Bebidas","Electro","Fiambrería","Frutas y Verduras","Huevos","Lácteos","Limpieza","Proteínas","Snacks y Postres"];
 
 //  PAGE SOLICITANTES 
 function PageSolicitantes({ notify }) {
@@ -2743,7 +2801,177 @@ function PageCatalogo({ notify }) {
   );
 }
 
-//  LOGIN PAGE 
+//  PAGE: RACIÓN POR PERSONA/DÍA
+//  Mínimo y máximo orientativo por categoría, por persona y por día (según
+//  la planilla de ración a bordo). Se usa para avisar en Nuevo pedido y al
+//  revisar/aprobar si una categoría se pasa de lo estimado.
+function PageParametrosDieta({ notify }) {
+  const [parametros, setParametros] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [savingGrupo, setSavingGrupo] = useState(null);
+  const [eliminandoGrupo, setEliminandoGrupo] = useState(null);
+  const [editados, setEditados] = useState({}); // grupo -> campos modificados
+  const [nuevo, setNuevo] = useState({ grupo: "", min: "", max: "", unidad_medida: "Kg" });
+  const [agregando, setAgregando] = useState(false);
+
+  const load = () => {
+    setLoading(true);
+    api.getParametros().then(d => { setParametros(d.sort((a, b) => a.grupo.localeCompare(b.grupo))); setLoading(false); })
+      .catch(e => { notify("Error al cargar: " + e.message, "error"); setLoading(false); });
+  };
+  useEffect(load, []);
+
+  const setcampo = (id, campo, valor) => {
+    setEditados(prev => ({ ...prev, [id]: { ...(prev[id] || {}), [campo]: valor } }));
+    setParametros(prev => prev.map(p => p.id === id ? { ...p, [campo]: valor } : p));
+  };
+  const getVal = (p, campo) => editados[p.id]?.[campo] !== undefined ? editados[p.id][campo] : p[campo];
+  const tieneCambios = (id) => !!editados[id] && Object.keys(editados[id]).length > 0;
+
+  const handleGuardarFila = async (p) => {
+    if (!tieneCambios(p.id)) return;
+    setSavingGrupo(p.id);
+    try {
+      const cambios = { ...editados[p.id] };
+      if (cambios.min !== undefined) cambios.min = cambios.min === "" ? null : parseFloat(cambios.min);
+      if (cambios.max !== undefined) cambios.max = cambios.max === "" ? null : parseFloat(cambios.max);
+      const { error } = await supabase.from("viveres_parametros_dieta").update(cambios).eq("id", p.id);
+      if (error) throw error;
+      setEditados(prev => { const n = { ...prev }; delete n[p.id]; return n; });
+      notify("Guardado", "success");
+    } catch (e) {
+      notify("Error: " + e.message, "error");
+    } finally {
+      setSavingGrupo(null);
+    }
+  };
+
+  const handleEliminarFila = async (p) => {
+    if (!window.confirm(`¿Eliminar la ración de referencia de "${p.grupo}"?`)) return;
+    setEliminandoGrupo(p.id);
+    try {
+      const { error } = await supabase.from("viveres_parametros_dieta").delete().eq("id", p.id);
+      if (error) throw error;
+      setParametros(prev => prev.filter(x => x.id !== p.id));
+      notify("Eliminado", "warn");
+    } catch (e) {
+      notify("Error: " + e.message, "error");
+    } finally {
+      setEliminandoGrupo(null);
+    }
+  };
+
+  const handleAgregar = async () => {
+    if (!nuevo.grupo.trim()) return alert("Elegí la categoría");
+    if (parametros.some(p => p.grupo === nuevo.grupo)) return alert("Esa categoría ya tiene una ración cargada — editala en la fila existente.");
+    setAgregando(true);
+    try {
+      const fila = {
+        grupo: nuevo.grupo,
+        min: nuevo.min === "" ? null : parseFloat(nuevo.min),
+        max: nuevo.max === "" ? null : parseFloat(nuevo.max),
+        unidad_medida: nuevo.unidad_medida,
+      };
+      const { data, error } = await supabase.from("viveres_parametros_dieta").insert([fila]).select().single();
+      if (error) throw error;
+      setParametros(prev => [...prev, data].sort((a, b) => a.grupo.localeCompare(b.grupo)));
+      setNuevo({ grupo: "", min: "", max: "", unidad_medida: "Kg" });
+      notify("Categoría agregada", "success");
+    } catch (e) { alert("Error: " + e.message); }
+    finally { setAgregando(false); }
+  };
+
+  const inStyle = {
+    background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 4,
+    color: "var(--text)", fontFamily: "var(--mono)", fontSize: 12, padding: "5px 8px",
+    outline: "none", width: 90, textAlign: "right",
+  };
+  const inStyleMod = { ...inStyle, background: "#FEF9C3", border: "1px solid #FDE68A", fontWeight: 600 };
+  const mod = (p, campo) => editados[p.id]?.[campo] !== undefined;
+
+  if (loading) return <div className="loading"><span className="spin">◌</span> Cargando...</div>;
+
+  return (
+    <div>
+      <div className="info-box accent mb12" style={{ fontSize: 12 }}>
+        Mínimo y máximo orientativo por persona y por día, por categoría — de la planilla de ración a bordo. Se usa para avisar en <strong>Nuevo pedido</strong> y al <strong>revisar/aprobar</strong> si una categoría se pasa de lo estimado (es una alerta, no bloquea el pedido). Editá los valores cuando quieras ajustar el criterio.
+      </div>
+
+      <div className="table-wrap">
+        <table className="tracker-table">
+          <thead>
+            <tr>
+              <th>Categoría</th>
+              <th style={{ width: 100, textAlign: "right" }}>Mínimo</th>
+              <th style={{ width: 100, textAlign: "right" }}>Máximo</th>
+              <th style={{ width: 110 }}>Unidad</th>
+              <th style={{ width: 70 }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {parametros.map(p => (
+              <tr key={p.id}>
+                <td style={{ fontWeight: 600 }}>{p.grupo}</td>
+                <td style={{ textAlign: "right" }}>
+                  <input type="number" step="0.01" value={getVal(p, "min") ?? ""} onChange={e => setcampo(p.id, "min", e.target.value)} style={mod(p, "min") ? inStyleMod : inStyle} />
+                </td>
+                <td style={{ textAlign: "right" }}>
+                  <input type="number" step="0.01" value={getVal(p, "max") ?? ""} onChange={e => setcampo(p.id, "max", e.target.value)} style={mod(p, "max") ? inStyleMod : inStyle} />
+                </td>
+                <td>
+                  <select value={getVal(p, "unidad_medida") || "Kg"} onChange={e => setcampo(p.id, "unidad_medida", e.target.value)} style={{ ...inStyle, width: "100%", textAlign: "left" }}>
+                    <option>Kg</option><option>Ltrs</option><option>un</option>
+                  </select>
+                </td>
+                <td style={{ display: "flex", gap: 4 }}>
+                  {tieneCambios(p.id) && (
+                    <button className="btn btn-primary btn-sm" onClick={() => handleGuardarFila(p)} disabled={savingGrupo === p.id}>
+                      {savingGrupo === p.id ? "..." : "✓"}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => handleEliminarFila(p)}
+                    title="Eliminar"
+                    disabled={eliminandoGrupo === p.id}
+                    style={{ background: "none", border: "none", color: "var(--muted2)", cursor: "pointer", fontSize: 14, padding: "3px 5px", borderRadius: 4 }}
+                  >
+                    {eliminandoGrupo === p.id ? "..." : "✕"}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="card mt16">
+        <div className="card-title">Agregar categoría</div>
+        <div className="form-grid-3">
+          <FG label="Categoría *">
+            <select value={nuevo.grupo} onChange={e => setNuevo(n => ({ ...n, grupo: e.target.value }))}>
+              <option value="">Seleccionar...</option>
+              {CATEGORIAS_CATALOGO.filter(c => !parametros.some(p => p.grupo === c)).map(c => <option key={c}>{c}</option>)}
+            </select>
+          </FG>
+          <FG label="Mínimo"><input type="number" step="0.01" value={nuevo.min} onChange={e => setNuevo(n => ({ ...n, min: e.target.value }))} /></FG>
+          <FG label="Máximo"><input type="number" step="0.01" value={nuevo.max} onChange={e => setNuevo(n => ({ ...n, max: e.target.value }))} /></FG>
+        </div>
+        <div className="form-grid-3">
+          <FG label="Unidad">
+            <select value={nuevo.unidad_medida} onChange={e => setNuevo(n => ({ ...n, unidad_medida: e.target.value }))}>
+              <option>Kg</option><option>Ltrs</option><option>un</option>
+            </select>
+          </FG>
+        </div>
+        <div className="form-footer-actions mt12">
+          <button className="btn btn-primary" onClick={handleAgregar} disabled={agregando}>{agregando ? "Guardando..." : "Agregar"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+//  LOGIN PAGE
 function LoginPage() {
   const [email, setEmail]     = useState("");
   const [pass, setPass]       = useState("");
@@ -3262,11 +3490,11 @@ function ViveresApp({ session }) {
     nuevo:     { grupo: "Pedidos",     titulo: "Nuevo pedido",         sub: "Cargá el pedido por embarcación. La dieta y la dotación definen las cantidades." },
     historial: { grupo: "Pedidos",     titulo: "Historial de pedidos", sub: "Todos los pedidos cargados, con su estado y su costo por cabeza y día." },
     tracker:   { grupo: "Seguimiento", titulo: "Seguimiento de entregas", sub: "Avance de cada pedido desde la compra hasta la recepción a bordo." },
-    stock_vuelta: { grupo: "Seguimiento", titulo: "Stock vuelta a puerto", sub: "Registrá el stock que queda a bordo cuando un buque vuelve a puerto, para completar el próximo pedido de ese buque." },
-    movimiento_stock: { grupo: "Seguimiento", titulo: "Movimiento stock en puerto", sub: "Registrá a diario el consumo de víveres a bordo para tener el stock real actualizado antes del próximo pedido." },
+    stock: { grupo: "Seguimiento", titulo: "Stock", sub: "Stock a bordo: el registro al volver a puerto y el consumo diario, para tener siempre el stock real antes del próximo pedido." },
     catalogo:  { grupo: "Datos",       titulo: "Catálogo de víveres",  sub: "Artículos habilitados, con unidad, rubro y precio de referencia." },
     solicitantes: { grupo: "Datos",    titulo: "Solicitantes",         sub: "Nombres habilitados para crear pedidos. Estandarizá quién puede solicitar víveres." },
     pivot:     { grupo: "Datos",       titulo: "Análisis pivot",       sub: "Consumo y costo cruzados por embarcación, rubro y período." },
+    parametros_dieta: { grupo: "Datos", titulo: "Ración por persona/día", sub: "Mínimo y máximo orientativo por categoría, para avisar si un pedido pide de más o de menos." },
   };
 
   const NAV = [
@@ -3279,13 +3507,13 @@ function ViveresApp({ session }) {
     ]},
     { titulo: "Seguimiento", items: [
       { id: "tracker", icon: "chart", label: "Seguimiento de entregas", count: 0 },
-      { id: "stock_vuelta", icon: "box", label: "Stock vuelta a puerto", count: 0 },
-      { id: "movimiento_stock", icon: "box", label: "Movimiento stock en puerto", count: 0 },
+      { id: "stock", icon: "box", label: "Stock", count: 0 },
     ]},
     { titulo: "Datos", items: [
       { id: "catalogo",     icon: "box",   label: "Catálogo",       count: 0 },
       { id: "solicitantes", icon: "users", label: "Solicitantes",   count: 0 },
       { id: "pivot",        icon: "grid",  label: "Análisis pivot", count: 0 },
+      { id: "parametros_dieta", icon: "grid", label: "Ración por persona/día", count: 0 },
     ]},
   ];
 
@@ -3384,11 +3612,11 @@ function ViveresApp({ session }) {
             {page === "nuevo"     && <PageNuevo notify={notify} onSaved={() => { setPage("historial"); loadCounts(); }} onCancel={() => setPage("historial")} />}
             {page === "historial" && <PageHistorial onNuevo={() => setPage("nuevo")} notify={notify} />}
             {page === "tracker"   && <PageTracker notify={notify} />}
-            {page === "stock_vuelta" && <PageStockVuelta notify={notify} userEmail={userEmail} />}
-            {page === "movimiento_stock" && <PageMovimientoStock notify={notify} userEmail={userEmail} />}
+            {page === "stock" && <PageStock notify={notify} userEmail={userEmail} />}
             {page === "catalogo"  && <PageCatalogo notify={notify} />}
             {page === "solicitantes" && <PageSolicitantes notify={notify} />}
             {page === "pivot"     && <PagePivot />}
+            {page === "parametros_dieta" && <PageParametrosDieta notify={notify} />}
           </div>
         </div>
       </div>
@@ -3401,8 +3629,7 @@ function ViveresApp({ session }) {
           { id: "nuevo",     label: "Nuevo",    icon: "cart",  count: 0 },
           { id: "historial", label: "Historial",icon: "list",  count: 0 },
           { id: "tracker",   label: "Entregas", icon: "chart", count: 0 },
-          { id: "stock_vuelta", label: "Stock", icon: "box", count: 0 },
-          { id: "movimiento_stock", label: "Consumo", icon: "box", count: 0 },
+          { id: "stock",     label: "Stock",    icon: "box",   count: 0 },
           { id: "catalogo",  label: "Catálogo", icon: "box",   count: 0 },
         ].map(it => (
           <div

@@ -297,30 +297,33 @@ const NICOLAS_EMAIL = "nthompson@ploffshore.com";
 //  CSS 
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Saira:wght@400;500;600;700;800;900&family=Archivo:wght@400;500;600;700;900&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 
 /*  TOKENS · INTEGRA Brand Book v1.0 
    Los nombres de variable son los que ya usaba esta app: cambian los valores,
    no los selectores. Navy = estructura, nunca acción. Un solo color de acción.
     */
+/* PL Offshore — tokens del Design System de marca (Brand Book v1.0):
+   Saira (labels/números) + Archivo (cuerpo), radio 2px, cero sombras,
+   foco y borde activo de nav en amarillo corporativo #FBBC05.
+   (Este módulo solo sirve a PL Offshore, no es multi-instancia). */
 :root{
-  --navy:#082F4E;--blue:#056D76;--mid:#4A5560;--light:#C9D0D6;
+  --navy:#002247;--blue:#002247;--mid:#4A5560;--light:#C9D0D6;
   --bg:#FAFBFC;--surface:#FFFFFF;--surface2:#F4F6F8;--surface3:#E4E8EC;
   --border:#E4E8EC;--border2:#C9D0D6;
   --text:#0F1419;--muted:#4A5560;--muted2:#7A8792;
-  --accent:#056D76;--accent2:#0E7A5F;--warn:#8F5A0B;--danger:#B3261E;
-  --purple:#4A5560;--teal:#056D76;--orange:#8F5A0B;
-  --mono:'IBM Plex Mono',monospace;--sans:'IBM Plex Sans',sans-serif;--r:4px;--r2:4px;
-  --nav:#082F4E;--action:#056D76;--action-press:#04565D;
+  --accent:#002247;--accent2:#0E7A5F;--warn:#8F5A0B;--danger:#B3261E;
+  --purple:#4A5560;--teal:#002247;--orange:#8F5A0B;
+  --mono:'Saira','Arial Narrow',Arial,sans-serif;--sans:'Archivo',Arial,Helvetica,sans-serif;--r:2px;--r2:2px;
+  --nav:#002247;--action:#002247;--action-press:#001730;
+  --shadow-elev:none;
+  --nav-active-accent:#FBBC05;
   --tr:color 120ms cubic-bezier(.2,0,.38,.9),background-color 120ms cubic-bezier(.2,0,.38,.9),border-color 120ms cubic-bezier(.2,0,.38,.9);
 }
-/* Instancia: se activa con <html data-instance="pl-offshore"> en index.html */
-[data-instance="pl-offshore"]{--nav:#002247;--action:#002247;--blue:#002247;--accent:#002247}
-[data-instance="clean-sea"]{--nav:#1B3765;--action:#006945;--blue:#006945;--accent:#006945}
-[data-instance="terramare"]{--nav:#213363;--action:#1F5285;--blue:#1F5285;--accent:#1F5285}
 
 body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:15px;line-height:1.55;min-height:100vh;overflow-x:hidden}
-*:focus-visible{outline:2px solid var(--action);outline-offset:2px}
+*:focus-visible{outline:2px solid var(--nav-active-accent);outline-offset:2px}
 .app{display:flex;min-height:100vh;overflow-x:hidden}
 
 /*  NAVEGACIÓN LATERAL · 240px, colapsa a iconos en mobile  */
@@ -333,7 +336,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:15
 .nav-section{padding:16px 16px 6px;font-family:var(--mono);font-size:11px;letter-spacing:.08em;color:rgba(255,255,255,.72);text-transform:uppercase}
 .ni{display:flex;align-items:center;gap:10px;padding:9px 16px;font-size:14px;font-weight:500;cursor:pointer;color:rgba(255,255,255,.72);border-left:3px solid transparent;transition:var(--tr);user-select:none;min-height:36px}
 .ni:hover{color:#fff;background:rgba(255,255,255,.08)}
-.ni.active{color:#fff;border-left-color:var(--action);background:rgba(255,255,255,.12);font-weight:500}
+.ni.active{color:#fff;border-left-color:var(--nav-active-accent);background:rgba(255,255,255,.12);font-weight:500}
 .ni.sub{padding-left:34px;font-size:13px;font-weight:400}
 .ni.sub.active{font-weight:500}
 .ni.back{color:rgba(255,255,255,.72);font-size:13px;border-top:1px solid rgba(255,255,255,.14);margin-top:6px}
@@ -414,7 +417,7 @@ tr.click:hover td{background:var(--surface2);cursor:pointer}
 
 /*  CAPAS FLOTANTES · la única sombra del sistema  */
 .overlay{position:fixed;inset:0;background:rgba(15,20,25,.45);display:flex;align-items:flex-start;justify-content:center;z-index:100;padding:24px;overflow-y:auto}
-.modal{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);width:100%;max-width:860px;margin:auto;box-shadow:0 8px 24px rgba(15,20,25,.14)}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);width:100%;max-width:860px;margin:auto;box-shadow:var(--shadow-elev)}
 .modal-lg{max-width:1120px}
 .mhdr{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;padding:20px 24px;border-bottom:1px solid var(--border);background:var(--surface);border-radius:var(--r) var(--r) 0 0}
 .mtitle{font-size:18px;font-weight:600;letter-spacing:0;color:var(--navy)}
@@ -462,7 +465,7 @@ tr.click:hover td{background:var(--surface2);cursor:pointer}
 .req-meta{display:flex;gap:16px;font-size:13px;color:var(--muted);flex-wrap:wrap;align-items:center}
 
 /*  AVISOS  */
-.notif{position:fixed;bottom:24px;right:24px;background:var(--surface);border:1px solid var(--border);border-left-width:3px;border-radius:var(--r);padding:14px 16px;font-size:14px;z-index:300;max-width:360px;display:flex;align-items:center;gap:12px;box-shadow:0 8px 24px rgba(15,20,25,.14)}
+.notif{position:fixed;bottom:24px;right:24px;background:var(--surface);border:1px solid var(--border);border-left-width:3px;border-radius:var(--r);padding:14px 16px;font-size:14px;z-index:300;max-width:360px;display:flex;align-items:center;gap:12px;box-shadow:var(--shadow-elev)}
 .n-green{border-left-color:var(--accent2)}.n-red{border-left-color:var(--danger)}.n-amber{border-left-color:var(--warn)}.n-blue{border-left-color:var(--action)}
 .info-box{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:14px 16px;font-size:14px}
 .info-box.accent{border-left:3px solid var(--action)}
@@ -609,7 +612,7 @@ tr.click:hover td{background:var(--surface2);cursor:pointer}
 .nav-section{padding:14px 16px 8px;font-family:var(--mono);font-size:11px;font-weight:500;letter-spacing:.08em;color:var(--muted);text-transform:uppercase;text-align:left}
 .ni{display:flex;align-items:center;gap:12px;width:100%;padding:9px 16px 9px 13px;background:transparent;border:0;border-left:3px solid transparent;cursor:pointer;text-align:left;font:400 14px/1.3 var(--sans);color:var(--muted);transition:var(--tr);min-height:38px}
 .ni:hover{background:var(--surface2);color:var(--navy)}
-.ni.active{background:var(--surface2);border-left-color:var(--action);color:var(--navy);font-weight:500}
+.ni.active{background:var(--surface2);border-left-color:var(--nav-active-accent);color:var(--navy);font-weight:500}
 .ni-ico{display:block;flex:0 0 auto;color:var(--muted2)}
 .ni.active .ni-ico{color:var(--action)}
 .ni-label{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

@@ -112,6 +112,13 @@ const api = {
     const { data } = supabase.storage.from("cotizaciones").getPublicUrl(path);
     return data.publicUrl;
   },
+  async subirCotizacion(file, pedidoId) {
+    const path = `viveres/cotizaciones/${pedidoId}/${Date.now()}_${file.name}`;
+    const { error } = await supabase.storage.from("cotizaciones").upload(path, file, { upsert: true });
+    if (error) throw error;
+    const { data } = supabase.storage.from("cotizaciones").getPublicUrl(path);
+    return data.publicUrl;
+  },
   async getSolicitantes() {
     const { data, error } = await supabase
       .from("viveres_solicitantes")
@@ -1254,14 +1261,17 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
 //  MODAL: TRACKER EDITAR 
 function ModalTrackerEditar({ pedido, onClose, onSave, notify }) {
   const remitoInputId = `remito-input-${pedido.id}`;
+  const cotizacionInputId = `cotizacion-input-${pedido.id}`;
   const [form, setForm] = useState({
     tracker_status: pedido.tracker_status || "pendiente",
     nro_remito: pedido.nro_remito || "",
+    nro_oc: pedido.nro_oc || "",
     fecha_entrega: pedido.fecha_entrega ? pedido.fecha_entrega.slice(0, 10) : "",
     tracker_notas: pedido.tracker_notas || "",
   });
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadingCotizacion, setUploadingCotizacion] = useState(false);
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
   const handleUploadRemito = async (file) => {
@@ -1276,12 +1286,25 @@ function ModalTrackerEditar({ pedido, onClose, onSave, notify }) {
     finally { setUploading(false); }
   };
 
+  const handleUploadCotizacion = async (file) => {
+    if (!file) return;
+    setUploadingCotizacion(true);
+    try {
+      const url = await api.subirCotizacion(file, pedido.id);
+      const updated = await api.actualizarPedido(pedido.id, { cotizacion_url: url, cotizacion_nombre: file.name });
+      notify("Cotización adjuntada", "success");
+      onSave(updated);
+    } catch (e) { notify("Error al subir cotización: " + e.message, "error"); }
+    finally { setUploadingCotizacion(false); }
+  };
+
   const handleSave = async () => {
     setSaving(true);
     try {
       const cambios = {
         tracker_status: form.tracker_status,
         nro_remito: form.nro_remito || null,
+        nro_oc: form.nro_oc || null,
         tracker_notas: form.tracker_notas || null,
         fecha_entrega: form.fecha_entrega ? new Date(form.fecha_entrega).toISOString() : null,
       };
@@ -1337,6 +1360,22 @@ function ModalTrackerEditar({ pedido, onClose, onSave, notify }) {
               </select>
             </FG>
             <FG label="Fecha de entrega"><input type="date" value={form.fecha_entrega} onChange={e => set("fecha_entrega", e.target.value)} /></FG>
+          </div>
+
+          <div className="form-section">Orden de compra</div>
+          <div className="form-grid">
+            <FG label="N° Orden de compra"><input value={form.nro_oc} onChange={e => set("nro_oc", e.target.value)} placeholder="Ej: OC-2026-0143" /></FG>
+            <FG label="Cotización (PDF / imagen)">
+              {pedido.cotizacion_url
+                ? <a href={pedido.cotizacion_url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--blue)", display: "flex", alignItems: "center", gap: 4, marginTop: 6 }}> Ver cotización adjunta{pedido.cotizacion_nombre ? ` (${pedido.cotizacion_nombre})` : ""}</a>
+                : <>
+                    <input type="file" id={cotizacionInputId} accept=".pdf,.jpg,.jpeg,.png" style={{ display: "none" }} onChange={e => handleUploadCotizacion(e.target.files[0])} />
+                    <button className="btn btn-ghost btn-sm" style={{ marginTop: 4 }} onClick={() => document.getElementById(cotizacionInputId).click()} disabled={uploadingCotizacion}>
+                      {uploadingCotizacion ? " Subiendo..." : " Adjuntar cotización"}
+                    </button>
+                  </>
+              }
+            </FG>
           </div>
 
           <div className="form-section">Remito</div>
@@ -1473,6 +1512,8 @@ function PageTracker({ notify }) {
                   <th> Aprobación</th>
                   <th>Aprobado por</th>
                   <th> Entrega</th>
+                  <th>Orden de compra</th>
+                  <th>Cotización</th>
                   <th>Remito</th>
                   <th>Notas</th>
                   <th style={{ width: 90, textAlign: "center" }}>Acciones</th>
@@ -1492,6 +1533,11 @@ function PageTracker({ notify }) {
                       <td className="text-mono" style={{ fontSize: 11, color: p.fecha_aprobacion ? "var(--accent2)" : "var(--muted2)" }}>{p.fecha_aprobacion ? fmtDate(p.fecha_aprobacion) : "—"}</td>
                       <td style={{ fontSize: 11, color: "var(--muted)" }}>{p.aprobado_por || "—"}</td>
                       <td className="text-mono" style={{ fontSize: 11, color: p.fecha_entrega ? "var(--accent2)" : "var(--muted2)" }}>{p.fecha_entrega ? fmtDate(p.fecha_entrega) : "—"}</td>
+                      <td style={{ fontSize: 11, color: p.nro_oc ? "var(--text)" : "var(--muted2)" }}>{p.nro_oc || "—"}</td>
+                      <td>{p.cotizacion_url
+                        ? <a href={p.cotizacion_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ fontSize: 11, color: "var(--blue)" }}> Ver</a>
+                        : <span style={{ fontSize: 11, color: "var(--muted2)" }}>—</span>
+                      }</td>
                       <td>{p.remito_url
                         ? <a href={p.remito_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ fontSize: 11, color: "var(--blue)" }}> {p.nro_remito || "Ver"}</a>
                         : <span style={{ fontSize: 11, color: "var(--muted2)" }}>{p.nro_remito || "—"}</span>

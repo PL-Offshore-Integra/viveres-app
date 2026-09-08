@@ -197,13 +197,13 @@ const api = {
     return data.publicUrl;
   },
   async getPerfilTipo(email) {
-    if (!email) return null;
+    if (!email) throw new Error("getPerfilTipo: falta email");
     const { data, error } = await supabase
       .from("perfiles")
       .select("tipo")
       .eq("email", email)
       .maybeSingle();
-    if (error) { console.error(error); return null; }
+    if (error) throw error;
     return data?.tipo || null;
   },
   async getSolicitantes() {
@@ -4713,7 +4713,9 @@ function ViveresApp({ session }) {
   // se confirma el tipo de perfil.
   const [esBuque, setEsBuque] = useState(true);
   useEffect(() => {
-    api.getPerfilTipo(userEmail).then(tipo => setEsBuque(tipo === "buque"));
+    api.getPerfilTipo(userEmail)
+      .then(tipo => setEsBuque(tipo === "buque"))
+      .catch(e => console.error("No se pudo resolver el tipo de perfil, se mantiene oculta la sección Datos:", e));
   }, [userEmail]);
   const notify = useCallback((text, type = "info") => { setNotif({ text, type }); setTimeout(() => setNotif(null), 4000); }, []);
   const loadCounts = useCallback(async () => { try { const d = await api.getPedidos({ status: "enviado" }); setInboxCount(d.length); } catch (e) { console.error(e); } }, []);

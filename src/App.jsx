@@ -196,6 +196,16 @@ const api = {
     const { data } = supabase.storage.from("cotizaciones").getPublicUrl(path);
     return data.publicUrl;
   },
+  async getPerfilTipo(email) {
+    if (!email) return null;
+    const { data, error } = await supabase
+      .from("perfiles")
+      .select("tipo")
+      .eq("email", email)
+      .maybeSingle();
+    if (error) { console.error(error); return null; }
+    return data?.tipo || null;
+  },
   async getSolicitantes() {
     const { data, error } = await supabase
       .from("viveres_solicitantes")
@@ -4696,6 +4706,15 @@ function ViveresApp({ session }) {
   const [notif, setNotif] = useState(null);
   const [inboxCount, setInboxCount] = useState(0);
   const [inboxOficinaCount, setInboxOficinaCount] = useState(0);
+  // Los logins de buque (perfiles.tipo === "buque", una cuenta por embarcación)
+  // no deben ver la sección "Datos": ahí vive el costo cruzado por embarcación
+  // (Análisis pivot) y precios de referencia (Catálogo). Arranca en true —
+  // oculto por defecto — para no mostrar ni un instante esos ítems mientras
+  // se confirma el tipo de perfil.
+  const [esBuque, setEsBuque] = useState(true);
+  useEffect(() => {
+    api.getPerfilTipo(userEmail).then(tipo => setEsBuque(tipo === "buque"));
+  }, [userEmail]);
   const notify = useCallback((text, type = "info") => { setNotif({ text, type }); setTimeout(() => setNotif(null), 4000); }, []);
   const loadCounts = useCallback(async () => { try { const d = await api.getPedidos({ status: "enviado" }); setInboxCount(d.length); } catch (e) { console.error(e); } }, []);
   const loadCountsOficina = useCallback(async () => { try { const d = await api.getPedidosOficina({ status: "enviado" }); setInboxOficinaCount(d.length); } catch (e) { console.error(e); } }, []);
@@ -4756,14 +4775,19 @@ function ViveresApp({ session }) {
       { id: "oficina_historial", icon: "list",  label: "Historial",           count: 0 },
       { id: "oficina_tracker",   icon: "chart", label: "Seguimiento",         count: 0 },
     ]},
-    { titulo: "Datos", items: [
+    ...(esBuque ? [] : [{ titulo: "Datos", items: [
       { id: "catalogo",     icon: "box",   label: "Catálogo",       count: 0 },
       { id: "solicitantes", icon: "users", label: "Solicitantes",   count: 0 },
       { id: "pivot",        icon: "grid",  label: "Análisis pivot", count: 0 },
       { id: "control_racion", icon: "grid", label: "Control de ración", count: 0 },
       { id: "parametros_dieta", icon: "grid", label: "Ración por persona/día", count: 0 },
-    ]},
+    ]}]),
   ];
+
+  const PAGINAS_DATOS = ["catalogo", "solicitantes", "pivot", "control_racion", "parametros_dieta"];
+  useEffect(() => {
+    if (esBuque && PAGINAS_DATOS.includes(page)) setPage("inbox");
+  }, [esBuque, page]);
 
   const seccion = SECCIONES[page] || { grupo: "Víveres", titulo: page, sub: "" };
   const inicial = (USUARIO || "C").replace(/@.*$/, "").slice(0, 2).toUpperCase();

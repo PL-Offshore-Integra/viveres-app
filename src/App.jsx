@@ -4708,14 +4708,14 @@ function ViveresApp({ session }) {
   const [inboxOficinaCount, setInboxOficinaCount] = useState(0);
   // Los logins de buque (perfiles.tipo === "buque", una cuenta por embarcación)
   // no deben ver la sección "Datos": ahí vive el costo cruzado por embarcación
-  // (Análisis pivot) y precios de referencia (Catálogo). Arranca en true —
-  // oculto por defecto — para no mostrar ni un instante esos ítems mientras
-  // se confirma el tipo de perfil.
-  const [esBuque, setEsBuque] = useState(true);
+  // (Análisis pivot) y precios de referencia (Catálogo).
+  // OJO: arranca en false (visible) — si el chequeo falla o no encuentra el
+  // perfil, no queremos bloquear a nadie que no sea un buque confirmado.
+  const [esBuque, setEsBuque] = useState(false);
   useEffect(() => {
     api.getPerfilTipo(userEmail)
       .then(tipo => setEsBuque(tipo === "buque"))
-      .catch(e => console.error("No se pudo resolver el tipo de perfil, se mantiene oculta la sección Datos:", e));
+      .catch(e => console.error("No se pudo resolver el tipo de perfil (se deja Datos visible):", e));
   }, [userEmail]);
   const notify = useCallback((text, type = "info") => { setNotif({ text, type }); setTimeout(() => setNotif(null), 4000); }, []);
   const loadCounts = useCallback(async () => { try { const d = await api.getPedidos({ status: "enviado" }); setInboxCount(d.length); } catch (e) { console.error(e); } }, []);

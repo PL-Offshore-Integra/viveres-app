@@ -2387,10 +2387,15 @@ function PageStock({ notify, userEmail }) {
       <div className="tabs-row">
         <div className={`tab ${tab === "vuelta" ? "active" : ""}`} onClick={() => setTab("vuelta")}>Vuelta a puerto</div>
         <div className={`tab ${tab === "movimiento" ? "active" : ""}`} onClick={() => setTab("movimiento")}>Movimiento en puerto</div>
+        <div className={`tab ${tab === "navegacion" ? "active" : ""}`} onClick={() => setTab("navegacion")}>En navegación</div>
       </div>
-      {tab === "vuelta"
-        ? <PageStockVuelta notify={notify} userEmail={userEmail} />
-        : <PageMovimientoStock notify={notify} userEmail={userEmail} />}
+      {tab === "vuelta" && <PageStockVuelta notify={notify} userEmail={userEmail} />}
+      {/* "Movimiento en puerto" y "En navegación" son la misma carga de consumo diario
+          (mismo formulario, misma tabla viveres_movimiento_stock) — la única diferencia
+          es la pestaña desde la que se accede, para que tenga sentido elegirla estando
+          en puerto o navegando. */}
+      {tab === "movimiento" && <PageMovimientoStock notify={notify} userEmail={userEmail} />}
+      {tab === "navegacion" && <PageMovimientoStock notify={notify} userEmail={userEmail} />}
     </div>
   );
 }

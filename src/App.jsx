@@ -2047,7 +2047,7 @@ function PageStockVuelta({ notify, userEmail }) {
 // puerto" del barco (usa el stock verificado si Nicolás lo cargó, si no el
 // stock original) menos todo lo consumido desde esa fecha, y resta lo que
 // se cargue hoy.
-function FormMovimientoStock({ base, baseline, consumidoPrevio, solicitantes = [], onSave, onCancel, notify }) {
+function FormMovimientoStock({ base, baseline, catalogoFallback, consumidoPrevio, solicitantes = [], onSave, onCancel, notify }) {
   const [saving, setSaving] = useState(false);
   const [cabecera, setCabecera] = useState({
     base_buque: base,
@@ -2055,7 +2055,13 @@ function FormMovimientoStock({ base, baseline, consumidoPrevio, solicitantes = [
     fecha: new Date().toISOString().split("T")[0],
     observaciones: "",
   });
-  const stockBase = baseline?.viveres_stock_vuelta_items || [];
+  // Sin un registro de "vuelta a puerto" no hay foto de stock de la que partir
+  // (pasa seguido en navegación) — en ese caso se arma la lista desde el
+  // catálogo completo, sin stock de referencia (partida = 0).
+  const stockBase = baseline?.viveres_stock_vuelta_items || (catalogoFallback || []).map(c => ({
+    catalogo_id: c.id, descripcion: c.descripcion, categoria: c.categoria,
+    unidad_analisis: c.unidad_analisis || c.unidad, stock: 0, stock_verificado: null,
+  }));
   const [items, setItems] = useState(() => stockBase.map(it => {
     const previo = consumidoPrevio[it.catalogo_id] || 0;
     const partida = it.stock_verificado != null ? it.stock_verificado : it.stock;
@@ -2232,10 +2238,11 @@ function ModalMovimientoDetalle({ registro, onClose }) {
 }
 
 //  PAGE: MOVIMIENTO STOCK EN PUERTO
-function PageMovimientoStock({ notify, userEmail }) {
+function PageMovimientoStock({ notify, userEmail, permitirSinBaseline = false }) {
   const [stockVuelta, setStockVuelta] = useState([]);
   const [movimientos, setMovimientos] = useState([]);
   const [solicitantes, setSolicitantes] = useState([]);
+  const [catalogo, setCatalogo] = useState([]);
   const [loading, setLoading] = useState(true);
   const [baseElegida, setBaseElegida] = useState("");
   const [mostrarForm, setMostrarForm] = useState(false);
@@ -2245,8 +2252,8 @@ function PageMovimientoStock({ notify, userEmail }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [sv, mv, sol] = await Promise.all([api.getStockVuelta(), api.getMovimientosStock(), api.getSolicitantes()]);
-      setStockVuelta(sv); setMovimientos(mv); setSolicitantes(sol);
+      const [sv, mv, sol, cat] = await Promise.all([api.getStockVuelta(), api.getMovimientosStock(), api.getSolicitantes(), api.getCatalogo()]);
+      setStockVuelta(sv); setMovimientos(mv); setSolicitantes(sol); setCatalogo(cat);
     } catch (e) {
       notify("Error al cargar el stock en puerto: " + e.message, "error");
     } finally {
@@ -2303,6 +2310,7 @@ function PageMovimientoStock({ notify, userEmail }) {
       <FormMovimientoStock
         base={baseElegida}
         baseline={baseline}
+        catalogoFallback={!baseline ? catalogo : undefined}
         consumidoPrevio={consumidoPrevio}
         solicitantes={solicitantes}
         onSave={handleGuardar}
@@ -2323,8 +2331,8 @@ function PageMovimientoStock({ notify, userEmail }) {
         <button
           className="btn btn-primary btn-sm"
           onClick={() => setMostrarForm(true)}
-          disabled={loading || !baseElegida || !baseline}
-          title={!baseElegida ? "Elegí un barco primero" : (!baseline ? "No hay un registro de Vuelta a Puerto para este barco" : undefined)}
+          disabled={loading || !baseElegida || (!baseline && !permitirSinBaseline)}
+          title={!baseElegida ? "Elegí un barco primero" : (!baseline && !permitirSinBaseline ? "No hay un registro de Vuelta a Puerto para este barco" : undefined)}
         >
           + Cargar consumo de hoy
         </button>
@@ -2332,7 +2340,10 @@ function PageMovimientoStock({ notify, userEmail }) {
 
       {baseElegida && !loading && !baseline && (
         <div className="info-box warn mb12" style={{ fontSize: 12 }}>
-          No hay ningún registro de <strong>Stock vuelta a puerto</strong> para {baseElegida}. Cargá uno primero en esa sección para tener un punto de partida.
+          No hay ningún registro de <strong>Stock vuelta a puerto</strong> para {baseElegida}.{" "}
+          {permitirSinBaseline
+            ? "Se puede cargar igual, tomando el catálogo completo como referencia (sin stock de partida conocido)."
+            : "Cargá uno primero en esa sección para tener un punto de partida."}
         </div>
       )}
 
@@ -2391,11 +2402,12 @@ function PageStock({ notify, userEmail }) {
       </div>
       {tab === "vuelta" && <PageStockVuelta notify={notify} userEmail={userEmail} />}
       {/* "Movimiento en puerto" y "En navegación" son la misma carga de consumo diario
-          (mismo formulario, misma tabla viveres_movimiento_stock) — la única diferencia
-          es la pestaña desde la que se accede, para que tenga sentido elegirla estando
-          en puerto o navegando. */}
+          (mismo formulario, misma tabla viveres_movimiento_stock). En puerto se exige
+          un registro de "vuelta a puerto" como punto de partida; en navegación no
+          siempre hay uno todavía, así que ahí se permite cargar igual usando el
+          catálogo completo como referencia. */}
       {tab === "movimiento" && <PageMovimientoStock notify={notify} userEmail={userEmail} />}
-      {tab === "navegacion" && <PageMovimientoStock notify={notify} userEmail={userEmail} />}
+      {tab === "navegacion" && <PageMovimientoStock notify={notify} userEmail={userEmail} permitirSinBaseline />}
     </div>
   );
 }

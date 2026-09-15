@@ -998,6 +998,9 @@ function PageNuevo({ notify, onSaved, onCancel }) {
 // (pedido de Nicolás, 2026-09-15: a veces la dotación cambia después de
 // aprobado y hay que poder corregirlo sin tener que rehacer el pedido).
 const EMAILS_EDITAN_PAX_DIAS = ["nthompson@ploffshore.com", "npadilla@ploffshore.com"];
+// Mismos dos correos: son los únicos habilitados para aprobar/rechazar
+// pedidos (pedido de Nicolás, 2026-09-15).
+const EMAILS_APRUEBAN_PEDIDOS = ["nthompson@ploffshore.com", "npadilla@ploffshore.com"];
 
 function ModalRevisar({ pedido, onClose, onActualizado, notify, userEmail }) {
   const [loading, setLoading] = useState(true);
@@ -1008,6 +1011,7 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify, userEmail }) {
   const [aprobadoPor, setAprobadoPor] = useState("");
   const [parametros, setParametros] = useState([]);
   const puedeEditarPaxDias = pedido.status === "aprobado" && EMAILS_EDITAN_PAX_DIAS.includes(userEmail);
+  const puedeAprobarORechazar = EMAILS_APRUEBAN_PEDIDOS.includes(userEmail);
   const [editandoPaxDias, setEditandoPaxDias] = useState(false);
   const [paxEdit, setPaxEdit] = useState(pedido.pax);
   const [diasEdit, setDiasEdit] = useState(pedido.dias);
@@ -1187,13 +1191,15 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify, userEmail }) {
         <div className="mbody">
           <div className="tabs-row">
             <div className={`tab ${modo === "detalle" ? "active" : ""}`} onClick={() => setModo("detalle")}>Detalle</div>
-            <div
-              className={`tab ${modo === "rechazar" ? "active" : ""}`}
-              onClick={() => setModo("rechazar")}
-              style={{ color: modo === "rechazar" ? "var(--danger)" : undefined, borderBottomColor: modo === "rechazar" ? "var(--danger)" : undefined }}
-            >
-              Rechazar
-            </div>
+            {puedeAprobarORechazar && (
+              <div
+                className={`tab ${modo === "rechazar" ? "active" : ""}`}
+                onClick={() => setModo("rechazar")}
+                style={{ color: modo === "rechazar" ? "var(--danger)" : undefined, borderBottomColor: modo === "rechazar" ? "var(--danger)" : undefined }}
+              >
+                Rechazar
+              </div>
+            )}
           </div>
 
           {/* TAB DETALLE */}
@@ -1349,16 +1355,24 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify, userEmail }) {
                 </button>
               </div>
 
-              <div className="form-section">Aprobación</div>
-              <div className="form-grid">
-                <FG label="Aprobado por *" hint="Queda guardado como respaldo junto con las cantidades originales y autorizadas.">
-                  <input
-                    value={aprobadoPor}
-                    onChange={e => setAprobadoPor(e.target.value)}
-                    placeholder="Nombre de quién aprueba..."
-                  />
-                </FG>
-              </div>
+              {puedeAprobarORechazar ? (
+                <>
+                  <div className="form-section">Aprobación</div>
+                  <div className="form-grid">
+                    <FG label="Aprobado por *" hint="Queda guardado como respaldo junto con las cantidades originales y autorizadas.">
+                      <input
+                        value={aprobadoPor}
+                        onChange={e => setAprobadoPor(e.target.value)}
+                        placeholder="Nombre de quién aprueba..."
+                      />
+                    </FG>
+                  </div>
+                </>
+              ) : (
+                <div className="info-box mb12" style={{ fontSize: 12 }}>
+                  Este usuario no tiene permiso para aprobar o rechazar pedidos.
+                </div>
+              )}
             </div>
           )}
 
@@ -1378,12 +1392,12 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify, userEmail }) {
         {/* FOOTER */}
         <div className="mftr">
           <button className="btn btn-ghost" onClick={onClose}>Cerrar</button>
-          {modo === "rechazar" && (
+          {puedeAprobarORechazar && modo === "rechazar" && (
             <button className="btn btn-danger" onClick={handleRechazar} disabled={saving || !motivoRechazo.trim()}>
               {saving ? "..." : "✕ Confirmar rechazo"}
             </button>
           )}
-          {modo === "detalle" && (
+          {puedeAprobarORechazar && modo === "detalle" && (
             <button
               className="btn btn-success"
               onClick={handleAprobar}
@@ -2463,7 +2477,7 @@ function PageStock({ notify, userEmail }) {
 }
 
 //  PAGE: INBOX
-function PageInbox({ notify, onNeedRefresh }) {
+function PageInbox({ notify, onNeedRefresh, userEmail }) {
   const [pedidos, setPedidos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(null);
@@ -2531,6 +2545,7 @@ function PageInbox({ notify, onNeedRefresh }) {
           onClose={() => setSelected(null)}
           onActualizado={() => { setSelected(null); notify("Pedido actualizado", "success"); load(); onNeedRefresh(); }}
           notify={notify}
+          userEmail={userEmail}
         />
       )}
     </div>
@@ -4949,7 +4964,7 @@ function ViveresApp({ session }) {
           </div>
 
           <div className="content">
-            {page === "inbox"     && <PageInbox notify={notify} onNeedRefresh={loadCounts} />}
+            {page === "inbox"     && <PageInbox notify={notify} onNeedRefresh={loadCounts} userEmail={userEmail} />}
             {page === "nuevo"     && <PageNuevo notify={notify} onSaved={() => { setPage("historial"); loadCounts(); }} onCancel={() => setPage("historial")} />}
             {page === "historial" && <PageHistorial onNuevo={() => setPage("nuevo")} notify={notify} userEmail={userEmail} />}
             {page === "tracker"   && <PageTracker notify={notify} />}

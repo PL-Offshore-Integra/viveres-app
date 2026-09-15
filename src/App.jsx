@@ -997,7 +997,7 @@ function PageNuevo({ notify, onSaved, onCancel }) {
 // Único usuario habilitado para corregir PAX/días de un pedido ya aprobado
 // (pedido de Nicolás, 2026-09-15: a veces la dotación cambia después de
 // aprobado y hay que poder corregirlo sin tener que rehacer el pedido).
-const EMAIL_EDITA_PAX_DIAS = "nthompson@ploffshore.com";
+const EMAILS_EDITAN_PAX_DIAS = ["nthompson@ploffshore.com", "npadilla@ploffshore.com"];
 
 function ModalRevisar({ pedido, onClose, onActualizado, notify, userEmail }) {
   const [loading, setLoading] = useState(true);
@@ -1007,7 +1007,7 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify, userEmail }) {
   const [itemsEdit, setItemsEdit] = useState([]);
   const [aprobadoPor, setAprobadoPor] = useState("");
   const [parametros, setParametros] = useState([]);
-  const puedeEditarPaxDias = pedido.status === "aprobado" && userEmail === EMAIL_EDITA_PAX_DIAS;
+  const puedeEditarPaxDias = pedido.status === "aprobado" && EMAILS_EDITAN_PAX_DIAS.includes(userEmail);
   const [editandoPaxDias, setEditandoPaxDias] = useState(false);
   const [paxEdit, setPaxEdit] = useState(pedido.pax);
   const [diasEdit, setDiasEdit] = useState(pedido.dias);

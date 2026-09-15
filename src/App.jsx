@@ -994,7 +994,12 @@ function PageNuevo({ notify, onSaved, onCancel }) {
 }
 
 //  MODAL: REVISAR PEDIDO 
-function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
+// Único usuario habilitado para corregir PAX/días de un pedido ya aprobado
+// (pedido de Nicolás, 2026-09-15: a veces la dotación cambia después de
+// aprobado y hay que poder corregirlo sin tener que rehacer el pedido).
+const EMAIL_EDITA_PAX_DIAS = "nthompson@ploffshore.com";
+
+function ModalRevisar({ pedido, onClose, onActualizado, notify, userEmail }) {
   const [loading, setLoading] = useState(true);
   const [modo, setModo] = useState("detalle");
   const [motivoRechazo, setMotivoRechazo] = useState("");
@@ -1002,6 +1007,25 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
   const [itemsEdit, setItemsEdit] = useState([]);
   const [aprobadoPor, setAprobadoPor] = useState("");
   const [parametros, setParametros] = useState([]);
+  const puedeEditarPaxDias = pedido.status === "aprobado" && userEmail === EMAIL_EDITA_PAX_DIAS;
+  const [editandoPaxDias, setEditandoPaxDias] = useState(false);
+  const [paxEdit, setPaxEdit] = useState(pedido.pax);
+  const [diasEdit, setDiasEdit] = useState(pedido.dias);
+  const [savingPaxDias, setSavingPaxDias] = useState(false);
+
+  const handleGuardarPaxDias = async () => {
+    setSavingPaxDias(true);
+    try {
+      await api.actualizarPedido(pedido.id, { pax: parseFloat(paxEdit) || 0, dias: parseFloat(diasEdit) || 0 });
+      notify("PAX y días actualizados", "success");
+      setEditandoPaxDias(false);
+      onActualizado();
+    } catch (e) {
+      notify("Error: " + e.message, "error");
+    } finally {
+      setSavingPaxDias(false);
+    }
+  };
 
   useEffect(() => {
     // cantidad_pedida (lo que cargó el requisitor) nunca se toca acá.
@@ -1123,12 +1147,38 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify }) {
         <div className="mhdr">
           <div>
             <div className="mtitle"> {pedido.base_buque} — Pedido de Víveres</div>
-            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
-              PL Offshore · {pedido.pax} PAX · {pedido.dias} días · {pedido.solicitado_por}
-              {pedido.fecha_necesaria && (
-                <span style={{ color: "var(--warn)", marginLeft: 8 }}>Nec: {fmtDate(pedido.fecha_necesaria)}</span>
-              )}
-            </div>
+            {editandoPaxDias ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
+                <input type="number" min={0} value={paxEdit} onChange={e => setPaxEdit(e.target.value)}
+                  style={{ width: 60, fontFamily: "var(--mono)", fontSize: 12, padding: "3px 6px", border: "1px solid var(--border2)", borderRadius: "var(--r)" }} />
+                <span style={{ fontSize: 11, color: "var(--muted)" }}>PAX ×</span>
+                <input type="number" min={0} value={diasEdit} onChange={e => setDiasEdit(e.target.value)}
+                  style={{ width: 60, fontFamily: "var(--mono)", fontSize: 12, padding: "3px 6px", border: "1px solid var(--border2)", borderRadius: "var(--r)" }} />
+                <span style={{ fontSize: 11, color: "var(--muted)" }}>días</span>
+                <button className="btn btn-primary btn-sm" disabled={savingPaxDias} onClick={handleGuardarPaxDias} style={{ marginLeft: 4 }}>
+                  {savingPaxDias ? "..." : "Guardar"}
+                </button>
+                <button className="btn btn-ghost btn-sm" disabled={savingPaxDias} onClick={() => { setEditandoPaxDias(false); setPaxEdit(pedido.pax); setDiasEdit(pedido.dias); }}>
+                  Cancelar
+                </button>
+              </div>
+            ) : (
+              <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
+                PL Offshore · {pedido.pax} PAX · {pedido.dias} días · {pedido.solicitado_por}
+                {puedeEditarPaxDias && (
+                  <button
+                    onClick={() => setEditandoPaxDias(true)}
+                    title="Editar PAX y días (solo vos podés hacer esto)"
+                    style={{ background: "none", border: "none", color: "var(--action)", cursor: "pointer", fontSize: 11, marginLeft: 8, padding: 0, textDecoration: "underline" }}
+                  >
+                    editar
+                  </button>
+                )}
+                {pedido.fecha_necesaria && (
+                  <span style={{ color: "var(--warn)", marginLeft: 8 }}>Nec: {fmtDate(pedido.fecha_necesaria)}</span>
+                )}
+              </div>
+            )}
           </div>
           <button className="mclose" onClick={onClose}>✕</button>
         </div>
@@ -2488,7 +2538,7 @@ function PageInbox({ notify, onNeedRefresh }) {
 }
 
 //  PAGE: HISTORIAL 
-function PageHistorial({ onNuevo, notify }) {
+function PageHistorial({ onNuevo, notify, userEmail }) {
   const [pedidos, setPedidos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(null);
@@ -2549,12 +2599,12 @@ function PageHistorial({ onNuevo, notify }) {
           </div>;
         })
       }
-      {selected && <ModalRevisar pedido={selected} onClose={() => setSelected(null)} onActualizado={() => { setSelected(null); load(); }} notify={notify} />}
+      {selected && <ModalRevisar pedido={selected} onClose={() => setSelected(null)} onActualizado={() => { setSelected(null); load(); }} notify={notify} userEmail={userEmail} />}
     </div>
   );
 }
 
-//  PAGE: CATÁLOGO 
+//  PAGE: CATÁLOGO
 const CATEGORIAS_CATALOGO = ["Almacén","Bebidas","Electro","Fiambrería","Frutas y Verduras","Huevos","Lácteos","Limpieza","Proteínas","Snacks y Postres"];
 
 //  PAGE SOLICITANTES 
@@ -4901,7 +4951,7 @@ function ViveresApp({ session }) {
           <div className="content">
             {page === "inbox"     && <PageInbox notify={notify} onNeedRefresh={loadCounts} />}
             {page === "nuevo"     && <PageNuevo notify={notify} onSaved={() => { setPage("historial"); loadCounts(); }} onCancel={() => setPage("historial")} />}
-            {page === "historial" && <PageHistorial onNuevo={() => setPage("nuevo")} notify={notify} />}
+            {page === "historial" && <PageHistorial onNuevo={() => setPage("nuevo")} notify={notify} userEmail={userEmail} />}
             {page === "tracker"   && <PageTracker notify={notify} />}
             {page === "stock" && <PageStock notify={notify} userEmail={userEmail} />}
             {page === "catalogo"  && <PageCatalogo notify={notify} />}

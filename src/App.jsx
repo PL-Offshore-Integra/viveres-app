@@ -2460,10 +2460,17 @@ function PageStock({ notify, userEmail }) {
   return (
     <div>
       <div className="tabs-row">
+        <div className={`tab ${tab === "inicio" ? "active" : ""}`} onClick={() => setTab("inicio")}>Carga stock (Inicio)</div>
         <div className={`tab ${tab === "vuelta" ? "active" : ""}`} onClick={() => setTab("vuelta")}>Vuelta a puerto</div>
         <div className={`tab ${tab === "movimiento" ? "active" : ""}`} onClick={() => setTab("movimiento")}>Movimiento en puerto</div>
         <div className={`tab ${tab === "navegacion" ? "active" : ""}`} onClick={() => setTab("navegacion")}>En navegación</div>
       </div>
+      {/* "Carga stock (Inicio)" y "Vuelta a puerto" son el mismo formulario/tabla
+          (viveres_stock_vuelta): una foto del stock a bordo para un buque y fecha.
+          "Inicio" es esa misma carga con otra etiqueta, para la primera vez que se
+          registra stock de un buque (antes de que haya habido una vuelta a puerto).
+          Los dos disponibles para cualquier buque de BASES, no solo uno. */}
+      {tab === "inicio" && <PageStockVuelta notify={notify} userEmail={userEmail} />}
       {tab === "vuelta" && <PageStockVuelta notify={notify} userEmail={userEmail} />}
       {/* "Movimiento en puerto" y "En navegación" son la misma carga de consumo diario
           (mismo formulario, misma tabla viveres_movimiento_stock). En puerto se exige

@@ -1231,6 +1231,7 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify, userEmail }) {
                       <th>Temp.</th>
                       <th>Descripción</th>
                       <th>Unidad</th>
+                      <th style={{ width: 80, textAlign: "right" }} title="Stock a bordo cargado en Vuelta a puerto al armar este pedido">Stock a bordo</th>
                       <th style={{ width: 90, textAlign: "right" }}>Cant. original</th>
                       <th style={{ width: 120, textAlign: "right" }}>Cant. aprobada</th>
                       <th style={{ width: 32 }}></th>
@@ -1239,7 +1240,7 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify, userEmail }) {
                   <tbody>
                     {itemsEdit.length === 0 ? (
                       <tr>
-                        <td colSpan={7} style={{ textAlign: "center", padding: 24, color: "var(--muted2)" }}>Sin ítems pedidos</td>
+                        <td colSpan={8} style={{ textAlign: "center", padding: 24, color: "var(--muted2)" }}>Sin ítems pedidos</td>
                       </tr>
                     ) : (
                       itemsEdit.map(it => {
@@ -1267,6 +1268,10 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify, userEmail }) {
                               {it.descripcion}
                             </td>
                             <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.unidad}</td>
+                            {/* Stock a bordo al momento de armar el pedido (Vuelta a puerto / Inicio) */}
+                            <td style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--muted)", textAlign: "right" }}>
+                              {it.stock_actual || 0}
+                            </td>
                             {/* Cantidad original — lo que cargó el requisitor, fijo, no se toca */}
                             <td style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--muted)", textAlign: "right" }}>
                               {it.cantidad_pedida}

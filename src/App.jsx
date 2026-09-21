@@ -848,6 +848,12 @@ function FormPedido({ pedidoInicial, catalogoInicial, parametros, solicitantes =
         </div>
       </div>
 
+      {registroStockVuelta && (
+        <div className="info-box accent mb12" style={{ fontSize: 12 }}>
+          La columna <strong>Stock</strong> de la tabla de abajo está precargada con lo registrado en <strong>Vuelta a puerto</strong> del <strong>{fmtDate(registroStockVuelta.fecha)}</strong> para {cabecera.base_buque}. Podés corregirla ítem por ítem si cambió.
+        </div>
+      )}
+
       <div className="tabs-row">
         <div className={`tab ${filtroCateg === "" ? "active" : ""}`} onClick={() => setFiltroCateg("")}>Todos</div>
         {categorias.map(cat => {
@@ -919,7 +925,7 @@ function FormPedido({ pedidoInicial, catalogoInicial, parametros, solicitantes =
           <div className="card" style={{ padding: 0, overflow: "hidden", marginBottom: 90 }}>
             <div className="table-wrap">
               <table className="tracker-table">
-                <thead><tr><th>Temp.</th><th>Categoría</th><th>Descripción</th><th>Unidad pedido</th><th>× Kg/L</th><th style={{ width: 80 }}>Stock</th><th style={{ width: 100 }}>Pedido</th><th>Total</th><th>Análisis/PAX/día</th></tr></thead>
+                <thead><tr><th>Temp.</th><th>Categoría</th><th>Descripción</th><th>Unidad pedido</th><th>× Kg/L</th><th style={{ width: 80 }} title="Stock a bordo cargado en Vuelta a puerto">Stock a bordo</th><th style={{ width: 100 }}>Pedido</th><th>Total</th><th>Análisis/PAX/día</th></tr></thead>
                 <tbody>
                   {itemsFiltrados.map(it => {
                     const total = (it.stock_actual || 0) + (it.cantidad_pedida || 0);

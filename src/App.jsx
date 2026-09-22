@@ -3353,8 +3353,160 @@ function LoginPage() {
   );
 }
 
-//  ROOT APP 
-//  PAGE PIVOT 
+//  PAGE: DASHBOARD (KPIs)
+//  Costo por PAX/día no se puede calcular todavía: el catálogo no tiene
+//  precios de referencia cargados. Se arma con lo que sí hay: cumplimiento
+//  de ración (mismo cálculo que Control de ración / ModalRevisar: cantidad
+//  efectiva × volumen_peso, por PAX·día, contra el min/max del parámetro) y
+//  los tiempos del ciclo del pedido.
+function PageDashboard() {
+  const [pedidos, setPedidos] = useState([]);
+  const [parametros, setParametros] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    Promise.all([api.getPedidos({}), api.getParametros()])
+      .then(([ped, par]) => { setPedidos(ped); setParametros(par); })
+      .finally(() => setLoading(false));
+  }, []);
+
+  const paramPorCategoria = useMemo(() => Object.fromEntries(parametros.map(p => [p.grupo, p])), [parametros]);
+  const buques = useMemo(() => [...new Set(pedidos.map(p => p.base_buque).filter(Boolean))].sort(), [pedidos]);
+
+  const { promEnvioAprobacion, promAprobacionEntrega } = useMemo(() => {
+    const tEA = [], tAE = [];
+    pedidos.forEach(p => {
+      if (p.created_at && p.fecha_aprobacion) {
+        const d = (new Date(p.fecha_aprobacion) - new Date(p.created_at)) / 86400000;
+        if (d >= 0) tEA.push(d);
+      }
+      if (p.fecha_aprobacion && p.fecha_entrega) {
+        const d = (new Date(p.fecha_entrega) - new Date(p.fecha_aprobacion)) / 86400000;
+        if (d >= 0) tAE.push(d);
+      }
+    });
+    const prom = arr => arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : null;
+    return { promEnvioAprobacion: prom(tEA), promAprobacionEntrega: prom(tAE) };
+  }, [pedidos]);
+
+  const { pctCumplimiento, cumplimientoPorBuque } = useMemo(() => {
+    let dentro = 0, total = 0;
+    const porBuque = {};
+    pedidos.forEach(p => {
+      const paxDias = (p.pax || 0) * (p.dias || 0);
+      if (!paxDias) return;
+      const porCategoria = {};
+      (p.viveres_pedido_items || []).filter(it => cantEfectiva(it) > 0).forEach(it => {
+        const cat = it.categoria || "Sin categoría";
+        porCategoria[cat] = (porCategoria[cat] || 0) + cantEfectiva(it) * (it.volumen_peso || 1);
+      });
+      Object.entries(porCategoria).forEach(([cat, val]) => {
+        const param = paramPorCategoria[cat];
+        if (!param || param.min == null || param.max == null) return;
+        const valorPaxDia = val / paxDias;
+        const ok = valorPaxDia >= param.min && valorPaxDia <= param.max;
+        total++; if (ok) dentro++;
+        if (!porBuque[p.base_buque]) porBuque[p.base_buque] = { dentro: 0, total: 0 };
+        porBuque[p.base_buque].total++; if (ok) porBuque[p.base_buque].dentro++;
+      });
+    });
+    return {
+      pctCumplimiento: total ? Math.round((dentro / total) * 100) : null,
+      cumplimientoPorBuque: porBuque,
+    };
+  }, [pedidos, paramPorCategoria]);
+
+  const stats = useMemo(() => ({
+    total: pedidos.length,
+    enviado: pedidos.filter(p => p.status === "enviado").length,
+    aprobado: pedidos.filter(p => p.status === "aprobado").length,
+    rechazado: pedidos.filter(p => p.status === "rechazado").length,
+  }), [pedidos]);
+
+  const racionesPorBuque = useMemo(() => {
+    const m = {};
+    pedidos.filter(p => p.status !== "rechazado").forEach(p => {
+      m[p.base_buque] = (m[p.base_buque] || 0) + (p.pax || 0) * (p.dias || 0);
+    });
+    return m;
+  }, [pedidos]);
+
+  if (loading) return <div className="loading"><span className="spin">◌</span></div>;
+
+  const fmt1 = v => v == null ? "—" : v.toFixed(1);
+  const colorCumplimiento = pctCumplimiento == null ? "var(--muted2)" : pctCumplimiento >= 80 ? "var(--accent2)" : pctCumplimiento >= 60 ? "var(--warn)" : "var(--danger)";
+
+  return (
+    <div>
+      <div className="info-box accent mb12" style={{ fontSize: 12 }}>
+        <strong>Costo por PAX/día</strong> todavía no se puede calcular acá: el catálogo no tiene precios de referencia cargados. Estos KPIs se arman con lo que sí hay hoy — ración y tiempos del ciclo del pedido.
+      </div>
+
+      <div className="stats">
+        <div className="stat">
+          <div className="stat-label">Cumplimiento de ración</div>
+          <div className="stat-value" style={{ color: colorCumplimiento }}>{pctCumplimiento == null ? "—" : `${pctCumplimiento}%`}</div>
+        </div>
+        <div className="stat">
+          <div className="stat-label">Envío → Aprobación</div>
+          <div className="stat-value">{fmt1(promEnvioAprobacion)}<span style={{ fontSize: 14, marginLeft: 4 }}>días</span></div>
+        </div>
+        <div className="stat">
+          <div className="stat-label">Aprobación → Entrega</div>
+          <div className="stat-value">{fmt1(promAprobacionEntrega)}<span style={{ fontSize: 14, marginLeft: 4 }}>días</span></div>
+        </div>
+        <div className="stat">
+          <div className="stat-label">Pedidos (enviado / aprobado / rechazado)</div>
+          <div className="stat-value" style={{ fontSize: 22 }}>{stats.enviado} / {stats.aprobado} / {stats.rechazado}</div>
+        </div>
+      </div>
+
+      <div className="card" style={{ padding: 0, overflow: "hidden", marginBottom: 16 }}>
+        <div className="card-title" style={{ padding: "16px 20px 0" }}>Cumplimiento de ración por embarcación</div>
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>Buque</th><th style={{ textAlign: "right" }}>Dentro de rango</th><th style={{ textAlign: "right" }}>Evaluado</th><th style={{ textAlign: "right" }}>%</th></tr></thead>
+            <tbody>
+              {buques.map(b => {
+                const d = cumplimientoPorBuque[b];
+                if (!d || !d.total) return null;
+                const pct = Math.round((d.dentro / d.total) * 100);
+                return (
+                  <tr key={b}>
+                    <td style={{ fontWeight: 600, fontSize: 12 }}>{b}</td>
+                    <td className="text-mono" style={{ textAlign: "right", fontSize: 12 }}>{d.dentro}</td>
+                    <td className="text-mono" style={{ textAlign: "right", fontSize: 12, color: "var(--muted)" }}>{d.total}</td>
+                    <td className="text-mono" style={{ textAlign: "right", fontSize: 12, fontWeight: 700 }}>{pct}%</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+        <div className="card-title" style={{ padding: "16px 20px 0" }}>Raciones atendidas por embarcación (PAX × días, pedidos no rechazados)</div>
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>Buque</th><th style={{ textAlign: "right" }}>Raciones</th></tr></thead>
+            <tbody>
+              {buques.map(b => (
+                <tr key={b}>
+                  <td style={{ fontWeight: 600, fontSize: 12 }}>{b}</td>
+                  <td className="text-mono" style={{ textAlign: "right", fontSize: 12 }}>{racionesPorBuque[b] || 0}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+//  ROOT APP
+//  PAGE PIVOT
 function PagePivot() {
   const [pedidos,    setPedidos]    = useState([]);
   const [loading,    setLoading]    = useState(true);
@@ -4853,6 +5005,7 @@ function ViveresApp({ session }) {
     historial: { grupo: "Pedidos",     titulo: "Historial de pedidos", sub: "Todos los pedidos cargados, con su estado y su costo por cabeza y día." },
     tracker:   { grupo: "Seguimiento", titulo: "Seguimiento de entregas", sub: "Avance de cada pedido desde la compra hasta la recepción a bordo." },
     stock: { grupo: "Seguimiento", titulo: "Stock", sub: "Stock a bordo: el registro al volver a puerto y el consumo diario, para tener siempre el stock real antes del próximo pedido." },
+    dashboard: { grupo: "Datos",       titulo: "Dashboard",            sub: "Cumplimiento de ración y tiempos del ciclo del pedido, por embarcación." },
     catalogo:  { grupo: "Datos",       titulo: "Catálogo de víveres",  sub: "Artículos habilitados, con unidad, rubro y precio de referencia." },
     solicitantes: { grupo: "Datos",    titulo: "Solicitantes",         sub: "Nombres habilitados para crear pedidos. Estandarizá quién puede solicitar víveres." },
     pivot:     { grupo: "Datos",       titulo: "Análisis pivot",       sub: "Consumo y costo cruzados por embarcación, rubro y período." },
@@ -4883,6 +5036,7 @@ function ViveresApp({ session }) {
       { id: "oficina_tracker",   icon: "chart", label: "Seguimiento",         count: 0 },
     ]},
     ...(esBuque ? [] : [{ titulo: "Datos", items: [
+      { id: "dashboard",    icon: "chart", label: "Dashboard",      count: 0 },
       { id: "catalogo",     icon: "box",   label: "Catálogo",       count: 0 },
       { id: "solicitantes", icon: "users", label: "Solicitantes",   count: 0 },
       { id: "pivot",        icon: "grid",  label: "Análisis pivot", count: 0 },
@@ -4891,7 +5045,7 @@ function ViveresApp({ session }) {
     ]}]),
   ];
 
-  const PAGINAS_DATOS = ["catalogo", "solicitantes", "pivot", "control_racion", "parametros_dieta"];
+  const PAGINAS_DATOS = ["dashboard", "catalogo", "solicitantes", "pivot", "control_racion", "parametros_dieta"];
   useEffect(() => {
     if (esBuque && PAGINAS_DATOS.includes(page)) setPage("inbox");
   }, [esBuque, page]);
@@ -4994,6 +5148,7 @@ function ViveresApp({ session }) {
             {page === "stock" && <PageStock notify={notify} userEmail={userEmail} />}
             {page === "catalogo"  && <PageCatalogo notify={notify} />}
             {page === "solicitantes" && <PageSolicitantes notify={notify} />}
+            {page === "dashboard" && <PageDashboard />}
             {page === "pivot"     && <PagePivot />}
             {page === "control_racion" && <PageControlRacion />}
             {page === "parametros_dieta" && <PageParametrosDieta notify={notify} userEmail={userEmail} />}

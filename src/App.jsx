@@ -126,6 +126,15 @@ const api = {
     const { data } = supabase.storage.from("cotizaciones").getPublicUrl(path);
     return data.publicUrl;
   },
+  // Reutilizable para factura 1 y factura 2 -- cada llamada cae en un path
+  // distinto (Date.now()), no hace falta una función separada por slot.
+  async subirFactura(file, pedidoId) {
+    const path = `viveres/facturas/${pedidoId}/${Date.now()}_${file.name}`;
+    const { error } = await supabase.storage.from("cotizaciones").upload(path, file, { upsert: true });
+    if (error) throw error;
+    const { data } = supabase.storage.from("cotizaciones").getPublicUrl(path);
+    return data.publicUrl;
+  },
 
   //  PEDIDO OFICINA — independiente de los pedidos de barco: sin PAX/días
   //  ni control de ración, con su propia tabla y su propio flujo de
@@ -1431,17 +1440,24 @@ function ModalRevisar({ pedido, onClose, onActualizado, notify, userEmail }) {
 //  MODAL: TRACKER EDITAR 
 function ModalTrackerEditar({ pedido, onClose, onSave, notify }) {
   const remitoInputId = `remito-input-${pedido.id}`;
+  const remitoInputId2 = `remito-input-2-${pedido.id}`;
   const cotizacionInputId = `cotizacion-input-${pedido.id}`;
+  const facturaInputId = `factura-input-${pedido.id}`;
+  const facturaInputId2 = `factura-input-2-${pedido.id}`;
   const [form, setForm] = useState({
     tracker_status: pedido.tracker_status || "pendiente",
     nro_remito: pedido.nro_remito || "",
+    nro_remito_2: pedido.nro_remito_2 || "",
     nro_oc: pedido.nro_oc || "",
     fecha_entrega: pedido.fecha_entrega ? pedido.fecha_entrega.slice(0, 10) : "",
     tracker_notas: pedido.tracker_notas || "",
   });
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploading2, setUploading2] = useState(false);
   const [uploadingCotizacion, setUploadingCotizacion] = useState(false);
+  const [uploadingFactura, setUploadingFactura] = useState(false);
+  const [uploadingFactura2, setUploadingFactura2] = useState(false);
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
   const handleUploadRemito = async (file) => {
@@ -1456,6 +1472,18 @@ function ModalTrackerEditar({ pedido, onClose, onSave, notify }) {
     finally { setUploading(false); }
   };
 
+  const handleUploadRemito2 = async (file) => {
+    if (!file) return;
+    setUploading2(true);
+    try {
+      const url = await api.subirRemito(file, pedido.id);
+      const updated = await api.actualizarPedido(pedido.id, { remito_url_2: url, nro_remito_2: form.nro_remito_2 || file.name });
+      notify("Segundo remito adjuntado", "success");
+      onSave(updated);
+    } catch (e) { notify("Error al subir remito: " + e.message, "error"); }
+    finally { setUploading2(false); }
+  };
+
   const handleUploadCotizacion = async (file) => {
     if (!file) return;
     setUploadingCotizacion(true);
@@ -1468,12 +1496,37 @@ function ModalTrackerEditar({ pedido, onClose, onSave, notify }) {
     finally { setUploadingCotizacion(false); }
   };
 
+  const handleUploadFactura = async (file) => {
+    if (!file) return;
+    setUploadingFactura(true);
+    try {
+      const url = await api.subirFactura(file, pedido.id);
+      const updated = await api.actualizarPedido(pedido.id, { factura_url: url, factura_nombre: file.name });
+      notify("Factura adjuntada", "success");
+      onSave(updated);
+    } catch (e) { notify("Error al subir factura: " + e.message, "error"); }
+    finally { setUploadingFactura(false); }
+  };
+
+  const handleUploadFactura2 = async (file) => {
+    if (!file) return;
+    setUploadingFactura2(true);
+    try {
+      const url = await api.subirFactura(file, pedido.id);
+      const updated = await api.actualizarPedido(pedido.id, { factura_url_2: url, factura_nombre_2: file.name });
+      notify("Segunda factura adjuntada", "success");
+      onSave(updated);
+    } catch (e) { notify("Error al subir factura: " + e.message, "error"); }
+    finally { setUploadingFactura2(false); }
+  };
+
   const handleSave = async () => {
     setSaving(true);
     try {
       const cambios = {
         tracker_status: form.tracker_status,
         nro_remito: form.nro_remito || null,
+        nro_remito_2: form.nro_remito_2 || null,
         nro_oc: form.nro_oc || null,
         tracker_notas: form.tracker_notas || null,
         fecha_entrega: form.fecha_entrega ? new Date(form.fecha_entrega).toISOString() : null,
@@ -1558,6 +1611,51 @@ function ModalTrackerEditar({ pedido, onClose, onSave, notify }) {
                     <input type="file" id={remitoInputId} accept=".pdf,.jpg,.jpeg,.png" style={{ display: "none" }} onChange={e => handleUploadRemito(e.target.files[0])} />
                     <button className="btn btn-ghost btn-sm" style={{ marginTop: 4 }} onClick={() => document.getElementById(remitoInputId).click()} disabled={uploading}>
                       {uploading ? " Subiendo..." : " Adjuntar remito"}
+                    </button>
+                  </>
+              }
+            </FG>
+          </div>
+
+          {/* Segundo remito y las dos facturas son opcionales -- no todos los
+              pedidos tienen más de un remito o llegan con factura todavía en
+              el momento de cargar el tracker. */}
+          <div className="form-section">Segundo remito (opcional)</div>
+          <div className="form-grid">
+            <FG label="N° Remito 2"><input value={form.nro_remito_2} onChange={e => set("nro_remito_2", e.target.value)} placeholder="Ej: 0001-00001235" /></FG>
+            <FG label="Remito firmado (PDF / imagen)">
+              {pedido.remito_url_2
+                ? <a href={pedido.remito_url_2} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--blue)", display: "flex", alignItems: "center", gap: 4, marginTop: 6 }}> Ver remito adjunto</a>
+                : <>
+                    <input type="file" id={remitoInputId2} accept=".pdf,.jpg,.jpeg,.png" style={{ display: "none" }} onChange={e => handleUploadRemito2(e.target.files[0])} />
+                    <button className="btn btn-ghost btn-sm" style={{ marginTop: 4 }} onClick={() => document.getElementById(remitoInputId2).click()} disabled={uploading2}>
+                      {uploading2 ? " Subiendo..." : " Adjuntar segundo remito"}
+                    </button>
+                  </>
+              }
+            </FG>
+          </div>
+
+          <div className="form-section">Facturas (opcional)</div>
+          <div className="form-grid">
+            <FG label="Factura 1 (PDF / imagen)">
+              {pedido.factura_url
+                ? <a href={pedido.factura_url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--blue)", display: "flex", alignItems: "center", gap: 4, marginTop: 6 }}> Ver factura adjunta{pedido.factura_nombre ? ` (${pedido.factura_nombre})` : ""}</a>
+                : <>
+                    <input type="file" id={facturaInputId} accept=".pdf,.jpg,.jpeg,.png" style={{ display: "none" }} onChange={e => handleUploadFactura(e.target.files[0])} />
+                    <button className="btn btn-ghost btn-sm" style={{ marginTop: 4 }} onClick={() => document.getElementById(facturaInputId).click()} disabled={uploadingFactura}>
+                      {uploadingFactura ? " Subiendo..." : " Adjuntar factura"}
+                    </button>
+                  </>
+              }
+            </FG>
+            <FG label="Factura 2 (PDF / imagen)">
+              {pedido.factura_url_2
+                ? <a href={pedido.factura_url_2} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--blue)", display: "flex", alignItems: "center", gap: 4, marginTop: 6 }}> Ver factura adjunta{pedido.factura_nombre_2 ? ` (${pedido.factura_nombre_2})` : ""}</a>
+                : <>
+                    <input type="file" id={facturaInputId2} accept=".pdf,.jpg,.jpeg,.png" style={{ display: "none" }} onChange={e => handleUploadFactura2(e.target.files[0])} />
+                    <button className="btn btn-ghost btn-sm" style={{ marginTop: 4 }} onClick={() => document.getElementById(facturaInputId2).click()} disabled={uploadingFactura2}>
+                      {uploadingFactura2 ? " Subiendo..." : " Adjuntar segunda factura"}
                     </button>
                   </>
               }

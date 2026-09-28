@@ -4,7 +4,7 @@ import { supabase } from "./lib/supabase";
 
 const USUARIO = "Comprador";
 const PORTAL_URL = "https://integra.ploffshore.com";
-const BASES = ["Golondrina de Mar", "Atlantic Dama", "Parana Ports"];
+const BASES = ["Golondrina de Mar", "Atlantic Dama", "Parana Ports", "Oficina"];
 const UNIDADES_PEDIDO = ["Kg", "Litros", "Unidad", "Caja", "Bolsa", "Atado", "Cajón", "Ristra", "Lata", "Pote", "Docena", "Bandeja"];
 const UNIDADES_ANALISIS = ["Kg", "Litros"];
 const PLAZO_PAGO_OPTIONS = ["Contado", "15 días", "30 días", "45 días", "60 días", "90 días"];
@@ -810,7 +810,18 @@ function FormPedido({ pedidoInicial, catalogoInicial, parametros, solicitantes =
     <div className="card">
       <div className="card-title">Datos del pedido</div>
       <div className="form-grid-3">
-        <FG label="Base / Buque *"><select value={cabecera.base_buque} onChange={e => setCab("base_buque", e.target.value)}><option value="">Seleccionar...</option>{BASES.map(b => <option key={b}>{b}</option>)}</select></FG>
+        <FG label="Base / Buque *">
+          <select value={cabecera.base_buque} onChange={e => {
+            const v = e.target.value;
+            setCab("base_buque", v);
+            // Oficina no tiene tripulación propia cargada como solicitante:
+            // precargamos "Personal de Oficina", pero se puede cambiar.
+            if (v === "Oficina") setCab("solicitado_por", "Personal de Oficina");
+          }}>
+            <option value="">Seleccionar...</option>
+            {BASES.map(b => <option key={b}>{b}</option>)}
+          </select>
+        </FG>
         <FG label="Solicitado por *"><select value={cabecera.solicitado_por} onChange={e => setCab("solicitado_por", e.target.value)}><option value="">Seleccionar...</option>{solicitantes.map(s => <option key={s.id} value={s.nombre}>{s.nombre}</option>)}{cabecera.solicitado_por && !solicitantes.some(s => s.nombre === cabecera.solicitado_por) && <option value={cabecera.solicitado_por}>{cabecera.solicitado_por}</option>}</select></FG>
         <FG label="Proyecto"><input value={cabecera.proyecto || ""} onChange={e => setCab("proyecto", e.target.value)} placeholder="Ej: OP-2026-003" /></FG>
       </div>

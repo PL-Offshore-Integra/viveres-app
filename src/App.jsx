@@ -45,10 +45,26 @@ const api = {
   },
   // Solo los ítems marcados "Disponible para pedido de oficina" — Pedido
   // Oficina no debe mostrar el catálogo completo de los barcos.
+  // Catálogo propio de Pedido Oficina -- tabla separada de la de los barcos
+  // (viveres_catalogo_oficina), para que sea un listado corto y autónomo que
+  // cualquiera pueda ampliar sin tocar el catálogo de a bordo.
   async getCatalogoOficina() {
-    const { data, error } = await supabase.from("viveres_catalogo").select("*").eq("activo", true).eq("disponible_oficina", true).order("categoria").order("descripcion");
+    const { data, error } = await supabase.from("viveres_catalogo_oficina").select("*").eq("activo", true).order("categoria").order("descripcion");
     if (error) throw error;
     return data || [];
+  },
+  async crearItemCatalogoOficina(descripcion, categoria, unidad) {
+    const { data, error } = await supabase
+      .from("viveres_catalogo_oficina")
+      .insert([{ descripcion: descripcion.trim(), categoria, unidad, activo: true }])
+      .select()
+      .maybeSingle();
+    if (error) throw error;
+    return data;
+  },
+  async eliminarItemCatalogoOficina(id) {
+    const { error } = await supabase.from("viveres_catalogo_oficina").update({ activo: false }).eq("id", id);
+    if (error) throw error;
   },
   async getParametros() {
     const { data, error } = await supabase.from("viveres_parametros_dieta").select("*");
@@ -2877,6 +2893,145 @@ function PageSolicitantes({ notify }) {
   );
 }
 
+//  PAGE: CATÁLOGO OFICINA (separado del catálogo de a bordo)
+function PageCatalogoOficina({ notify }) {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [nuevaDescripcion, setNuevaDescripcion] = useState("");
+  const [nuevaCategoria, setNuevaCategoria] = useState(CATEGORIAS_CATALOGO[0]);
+  const [nuevaUnidad, setNuevaUnidad] = useState("Unidad");
+  const [saving, setSaving] = useState(false);
+  const [eliminandoId, setEliminandoId] = useState(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    api.getCatalogoOficina()
+      .then(d => { setItems(d); setLoading(false); })
+      .catch(e => { notify("Error: " + e.message, "error"); setLoading(false); });
+  }, [notify]);
+  useEffect(() => { load(); }, [load]);
+
+  const handleAgregar = async () => {
+    const descripcion = nuevaDescripcion.trim();
+    if (!descripcion) return;
+    if (items.some(it => it.descripcion.toLowerCase() === descripcion.toLowerCase())) {
+      notify("Ese ítem ya está en el catálogo de oficina", "warn");
+      return;
+    }
+    setSaving(true);
+    try {
+      const data = await api.crearItemCatalogoOficina(descripcion, nuevaCategoria, nuevaUnidad);
+      if (data) setItems(prev => [...prev, data].sort((a, b) => a.descripcion.localeCompare(b.descripcion, "es")));
+      setNuevaDescripcion("");
+      notify("Ítem agregado al catálogo de oficina", "success");
+    } catch (e) {
+      notify("Error: " + e.message, "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleEliminar = async (it) => {
+    if (!window.confirm(`¿Quitar "${it.descripcion}" del catálogo de oficina?`)) return;
+    setEliminandoId(it.id);
+    const previo = items;
+    setItems(prev => prev.filter(x => x.id !== it.id)); // optimista
+    try {
+      await api.eliminarItemCatalogoOficina(it.id);
+      notify("Ítem quitado", "warn");
+    } catch (e) {
+      setItems(previo); // revert
+      notify("Error: " + e.message, "error");
+    } finally {
+      setEliminandoId(null);
+    }
+  };
+
+  const handleKey = (e) => { if (e.key === "Enter") handleAgregar(); };
+
+  return (
+    <div>
+      <div className="info-box accent mb12" style={{ fontSize: 12 }}>
+        Este catálogo es <strong>propio de Pedido Oficina</strong>, separado del catálogo de a bordo de los barcos — lo que agregás o sacás acá no afecta el catálogo de las embarcaciones, ni al revés.
+      </div>
+
+      <div className="card" style={{ maxWidth: 640 }}>
+        <div className="card-title">Agregar ítem</div>
+        <div className="form-grid-3">
+          <FG label="Descripción"><input value={nuevaDescripcion} onChange={e => setNuevaDescripcion(e.target.value)} onKeyDown={handleKey} placeholder="Ej: Papel higiénico" /></FG>
+          <FG label="Categoría">
+            <select value={nuevaCategoria} onChange={e => setNuevaCategoria(e.target.value)}>
+              {CATEGORIAS_CATALOGO.map(c => <option key={c}>{c}</option>)}
+            </select>
+          </FG>
+          <FG label="Unidad">
+            <select value={nuevaUnidad} onChange={e => setNuevaUnidad(e.target.value)}>
+              {UNIDADES_PEDIDO.map(u => <option key={u}>{u}</option>)}
+            </select>
+          </FG>
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
+          <button className="btn btn-primary" onClick={handleAgregar} disabled={saving || !nuevaDescripcion.trim()}>
+            {saving ? "Guardando..." : "+ Agregar"}
+          </button>
+        </div>
+      </div>
+
+      {loading ? <div className="loading"><span className="spin">◌</span></div> :
+        <div className="card" style={{ padding: 0, overflow: "hidden", maxWidth: 640 }}>
+          <div className="card-title" style={{ padding: "16px 24px 0" }}>
+            Ítems habilitados
+            <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--muted)", textTransform: "none", letterSpacing: 0 }}>{items.length} activo{items.length !== 1 ? "s" : ""}</span>
+          </div>
+          {items.length === 0 ? (
+            <div className="manual-empty" style={{ margin: 24 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "var(--navy)" }}>Sin ítems cargados</div>
+              <div style={{ fontSize: 12, color: "var(--muted)" }}>Agregá el primero usando el formulario de arriba.</div>
+            </div>
+          ) : (
+            <div className="table-wrap">
+              <table className="items-edit">
+                <thead>
+                  <tr>
+                    <th>Descripción</th>
+                    <th>Categoría</th>
+                    <th>Unidad</th>
+                    <th style={{ width: 70 }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map(it => {
+                    const eliminando = eliminandoId === it.id;
+                    return (
+                      <tr key={it.id}>
+                        <td style={{ fontSize: 13, fontWeight: 500 }}>{it.descripcion}</td>
+                        <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.categoria}</td>
+                        <td style={{ fontSize: 11, color: "var(--muted)" }}>{it.unidad}</td>
+                        <td>
+                          <button
+                            onClick={() => handleEliminar(it)}
+                            disabled={eliminando}
+                            title="Quitar del catálogo de oficina"
+                            style={{ background: "none", border: "none", color: "var(--muted2)", cursor: "pointer", fontSize: 14, padding: "3px 5px", borderRadius: 4, opacity: eliminando ? 0.5 : 1, transition: "color .12s" }}
+                            onMouseEnter={e => e.currentTarget.style.color = "var(--danger)"}
+                            onMouseLeave={e => e.currentTarget.style.color = "var(--muted2)"}
+                          >
+                            {eliminando ? "..." : "✕"}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      }
+    </div>
+  );
+}
+
 function PageCatalogo({ notify }) {
   const [catalogo, setCatalogo] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -3002,7 +3157,6 @@ function PageCatalogo({ notify }) {
                   <th>Unidad análisis</th>
                   <th style={{ width: 70 }}>Stock</th>
                   <th>Vol/Peso</th>
-                  <th style={{ width: 60, textAlign: "center" }} title="Disponible para Pedido Oficina">Oficina</th>
                   <th style={{ width: 70 }}></th>
                 </tr>
               </thead>
@@ -3086,15 +3240,6 @@ function PageCatalogo({ notify }) {
                           style={mod(c, "volumen_peso") ? inStyleMod : inStyle}
                         />
                       </td>
-                      <td style={{ textAlign: "center" }}>
-                        <input
-                          type="checkbox"
-                          checked={!!getVal(c, "disponible_oficina")}
-                          onChange={e => setcampo(c.id, "disponible_oficina", e.target.checked)}
-                          style={{ width: "auto", accentColor: "var(--accent)", cursor: "pointer" }}
-                          title="Disponible para Pedido Oficina"
-                        />
-                      </td>
                       <td>
                         <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                           {hayC && (
@@ -3149,10 +3294,6 @@ function PageCatalogo({ notify }) {
               {form.volumen_peso && parseFloat(form.volumen_peso) !== 1 && (
                 <div className="info-box accent mt8" style={{ fontSize: 11 }}>Ejemplo: 3 {form.unidad} → {(3 * parseFloat(form.volumen_peso)).toFixed(3)} {form.unidad_analisis}</div>
               )}
-              <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14, fontSize: 12, cursor: "pointer" }}>
-                <input type="checkbox" checked={form.disponible_oficina} onChange={e => setF("disponible_oficina", e.target.checked)} style={{ width: "auto", accentColor: "var(--accent)" }} />
-                Disponible para Pedido Oficina
-              </label>
             </div>
             <div className="mftr">
               <button className="btn btn-ghost" onClick={() => setModal(false)}>Cancelar</button>
@@ -4484,8 +4625,8 @@ function PageNuevoOficina({ notify, onSaved, onCancel }) {
   if (catalogo.length === 0) return (
     <div className="empty-state">
       <div style={{ fontSize: 28, marginBottom: 8 }}></div>
-      Sin productos habilitados para Pedido Oficina todavía.<br />
-      Marcalos en Catálogo con la columna "Oficina", o desde "+ Agregar ítem" tildando "Disponible para pedido de oficina".
+      Sin productos en el catálogo de oficina todavía.<br />
+      Cargalos en "Pedido Oficina → Catálogo oficina".
     </div>
   );
   return (
@@ -5124,6 +5265,7 @@ function ViveresApp({ session }) {
     oficina_nuevo:     { grupo: "Pedido Oficina", titulo: "Nuevo pedido oficina", sub: "Elegí del catálogo los productos y cantidades para la oficina. No usa PAX/días ni control de ración." },
     oficina_historial: { grupo: "Pedido Oficina", titulo: "Historial oficina",    sub: "Todos los pedidos de oficina cargados, con su estado." },
     oficina_tracker:   { grupo: "Pedido Oficina", titulo: "Seguimiento oficina",  sub: "Avance de cada pedido de oficina desde la compra hasta la recepción." },
+    oficina_catalogo:  { grupo: "Pedido Oficina", titulo: "Catálogo oficina",     sub: "Ítems propios de Pedido Oficina, separados del catálogo de a bordo. Agregá o sacá lo que haga falta." },
   };
 
   const NAV = [
@@ -5143,6 +5285,7 @@ function ViveresApp({ session }) {
       { id: "oficina_nuevo",     icon: "cart",  label: "Nuevo pedido",        count: 0 },
       { id: "oficina_historial", icon: "list",  label: "Historial",           count: 0 },
       { id: "oficina_tracker",   icon: "chart", label: "Seguimiento",         count: 0 },
+      ...(esBuque ? [] : [{ id: "oficina_catalogo", icon: "box", label: "Catálogo oficina", count: 0 }]),
     ]},
     ...(esBuque ? [] : [{ titulo: "Datos", items: [
       { id: "dashboard",    icon: "chart", label: "Dashboard",      count: 0 },
@@ -5154,7 +5297,7 @@ function ViveresApp({ session }) {
     ]}]),
   ];
 
-  const PAGINAS_DATOS = ["dashboard", "catalogo", "solicitantes", "pivot", "control_racion", "parametros_dieta"];
+  const PAGINAS_DATOS = ["dashboard", "catalogo", "solicitantes", "pivot", "control_racion", "parametros_dieta", "oficina_catalogo"];
   useEffect(() => {
     if (esBuque && PAGINAS_DATOS.includes(page)) setPage("inbox");
   }, [esBuque, page]);
@@ -5265,6 +5408,7 @@ function ViveresApp({ session }) {
             {page === "oficina_nuevo" && <PageNuevoOficina notify={notify} onSaved={() => { setPage("oficina_historial"); loadCountsOficina(); }} onCancel={() => setPage("oficina_historial")} />}
             {page === "oficina_historial" && <PageHistorialOficina onNuevo={() => setPage("oficina_nuevo")} notify={notify} />}
             {page === "oficina_tracker" && <PageTrackerOficina notify={notify} />}
+            {page === "oficina_catalogo" && <PageCatalogoOficina notify={notify} />}
           </div>
         </div>
       </div>

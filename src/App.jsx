@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import * as XLSX from "xlsx";
 import { supabase } from "./lib/supabase";
+import { ArchivoLink } from "./lib/archivos";
 
 const USUARIO = "Comprador";
 const PORTAL_URL = "https://integra.ploffshore.com";
@@ -1617,7 +1618,7 @@ function ModalTrackerEditar({ pedido, onClose, onSave, notify }) {
             <FG label="N° Orden de compra"><input value={form.nro_oc} onChange={e => set("nro_oc", e.target.value)} placeholder="Ej: OC-2026-0143" /></FG>
             <FG label="Cotización (PDF / imagen)">
               {pedido.cotizacion_url
-                ? <a href={pedido.cotizacion_url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--blue)", display: "flex", alignItems: "center", gap: 4, marginTop: 6 }}> Ver cotización adjunta{pedido.cotizacion_nombre ? ` (${pedido.cotizacion_nombre})` : ""}</a>
+                ? <ArchivoLink href={pedido.cotizacion_url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--blue)", display: "flex", alignItems: "center", gap: 4, marginTop: 6 }}> Ver cotización adjunta{pedido.cotizacion_nombre ? ` (${pedido.cotizacion_nombre})` : ""}</ArchivoLink>
                 : <>
                     <input type="file" id={cotizacionInputId} accept=".pdf,.jpg,.jpeg,.png" style={{ display: "none" }} onChange={e => handleUploadCotizacion(e.target.files[0])} />
                     <button className="btn btn-ghost btn-sm" style={{ marginTop: 4 }} onClick={() => document.getElementById(cotizacionInputId).click()} disabled={uploadingCotizacion}>
@@ -1633,7 +1634,7 @@ function ModalTrackerEditar({ pedido, onClose, onSave, notify }) {
             <FG label="N° Remito"><input value={form.nro_remito} onChange={e => set("nro_remito", e.target.value)} placeholder="Ej: 0001-00001234" /></FG>
             <FG label="Remito firmado (PDF / imagen)">
               {pedido.remito_url
-                ? <a href={pedido.remito_url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--blue)", display: "flex", alignItems: "center", gap: 4, marginTop: 6 }}> Ver remito adjunto</a>
+                ? <ArchivoLink href={pedido.remito_url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--blue)", display: "flex", alignItems: "center", gap: 4, marginTop: 6 }}> Ver remito adjunto</ArchivoLink>
                 : <>
                     <input type="file" id={remitoInputId} accept=".pdf,.jpg,.jpeg,.png" style={{ display: "none" }} onChange={e => handleUploadRemito(e.target.files[0])} />
                     <button className="btn btn-ghost btn-sm" style={{ marginTop: 4 }} onClick={() => document.getElementById(remitoInputId).click()} disabled={uploading}>
@@ -1652,7 +1653,7 @@ function ModalTrackerEditar({ pedido, onClose, onSave, notify }) {
             <FG label="N° Remito 2"><input value={form.nro_remito_2} onChange={e => set("nro_remito_2", e.target.value)} placeholder="Ej: 0001-00001235" /></FG>
             <FG label="Remito firmado (PDF / imagen)">
               {pedido.remito_url_2
-                ? <a href={pedido.remito_url_2} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--blue)", display: "flex", alignItems: "center", gap: 4, marginTop: 6 }}> Ver remito adjunto</a>
+                ? <ArchivoLink href={pedido.remito_url_2} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--blue)", display: "flex", alignItems: "center", gap: 4, marginTop: 6 }}> Ver remito adjunto</ArchivoLink>
                 : <>
                     <input type="file" id={remitoInputId2} accept=".pdf,.jpg,.jpeg,.png" style={{ display: "none" }} onChange={e => handleUploadRemito2(e.target.files[0])} />
                     <button className="btn btn-ghost btn-sm" style={{ marginTop: 4 }} onClick={() => document.getElementById(remitoInputId2).click()} disabled={uploading2}>
@@ -1667,7 +1668,7 @@ function ModalTrackerEditar({ pedido, onClose, onSave, notify }) {
           <div className="form-grid">
             <FG label="Factura 1 (PDF / imagen)">
               {pedido.factura_url
-                ? <a href={pedido.factura_url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--blue)", display: "flex", alignItems: "center", gap: 4, marginTop: 6 }}> Ver factura adjunta{pedido.factura_nombre ? ` (${pedido.factura_nombre})` : ""}</a>
+                ? <ArchivoLink href={pedido.factura_url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--blue)", display: "flex", alignItems: "center", gap: 4, marginTop: 6 }}> Ver factura adjunta{pedido.factura_nombre ? ` (${pedido.factura_nombre})` : ""}</ArchivoLink>
                 : <>
                     <input type="file" id={facturaInputId} accept=".pdf,.jpg,.jpeg,.png" style={{ display: "none" }} onChange={e => handleUploadFactura(e.target.files[0])} />
                     <button className="btn btn-ghost btn-sm" style={{ marginTop: 4 }} onClick={() => document.getElementById(facturaInputId).click()} disabled={uploadingFactura}>
@@ -1678,7 +1679,7 @@ function ModalTrackerEditar({ pedido, onClose, onSave, notify }) {
             </FG>
             <FG label="Factura 2 (PDF / imagen)">
               {pedido.factura_url_2
-                ? <a href={pedido.factura_url_2} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--blue)", display: "flex", alignItems: "center", gap: 4, marginTop: 6 }}> Ver factura adjunta{pedido.factura_nombre_2 ? ` (${pedido.factura_nombre_2})` : ""}</a>
+                ? <ArchivoLink href={pedido.factura_url_2} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--blue)", display: "flex", alignItems: "center", gap: 4, marginTop: 6 }}> Ver factura adjunta{pedido.factura_nombre_2 ? ` (${pedido.factura_nombre_2})` : ""}</ArchivoLink>
                 : <>
                     <input type="file" id={facturaInputId2} accept=".pdf,.jpg,.jpeg,.png" style={{ display: "none" }} onChange={e => handleUploadFactura2(e.target.files[0])} />
                     <button className="btn btn-ghost btn-sm" style={{ marginTop: 4 }} onClick={() => document.getElementById(facturaInputId2).click()} disabled={uploadingFactura2}>
@@ -1830,11 +1831,11 @@ function PageTracker({ notify }) {
                       <td className="text-mono" style={{ fontSize: 11, color: p.fecha_entrega ? "var(--accent2)" : "var(--muted2)" }}>{p.fecha_entrega ? fmtDate(p.fecha_entrega) : "—"}</td>
                       <td style={{ fontSize: 11, color: p.nro_oc ? "var(--text)" : "var(--muted2)" }}>{p.nro_oc || "—"}</td>
                       <td>{p.cotizacion_url
-                        ? <a href={p.cotizacion_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ fontSize: 11, color: "var(--blue)" }}> Ver</a>
+                        ? <ArchivoLink href={p.cotizacion_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ fontSize: 11, color: "var(--blue)" }}> Ver</ArchivoLink>
                         : <span style={{ fontSize: 11, color: "var(--muted2)" }}>—</span>
                       }</td>
                       <td>{p.remito_url
-                        ? <a href={p.remito_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ fontSize: 11, color: "var(--blue)" }}> {p.nro_remito || "Ver"}</a>
+                        ? <ArchivoLink href={p.remito_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ fontSize: 11, color: "var(--blue)" }}> {p.nro_remito || "Ver"}</ArchivoLink>
                         : <span style={{ fontSize: 11, color: "var(--muted2)" }}>{p.nro_remito || "—"}</span>
                       }</td>
                       <td style={{ fontSize: 11, color: "var(--muted)", maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.tracker_notas || "—"}</td>
@@ -5028,7 +5029,7 @@ function ModalTrackerEditarOficina({ pedido, onClose, onSave, notify }) {
             <FG label="N° Orden de compra"><input value={form.nro_oc} onChange={e => set("nro_oc", e.target.value)} placeholder="Ej: OC-2026-0143" /></FG>
             <FG label="Cotización (PDF / imagen)">
               {pedido.cotizacion_url
-                ? <a href={pedido.cotizacion_url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--blue)", display: "flex", alignItems: "center", gap: 4, marginTop: 6 }}> Ver cotización adjunta{pedido.cotizacion_nombre ? ` (${pedido.cotizacion_nombre})` : ""}</a>
+                ? <ArchivoLink href={pedido.cotizacion_url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--blue)", display: "flex", alignItems: "center", gap: 4, marginTop: 6 }}> Ver cotización adjunta{pedido.cotizacion_nombre ? ` (${pedido.cotizacion_nombre})` : ""}</ArchivoLink>
                 : <>
                     <input type="file" id={cotizacionInputId} accept=".pdf,.jpg,.jpeg,.png" style={{ display: "none" }} onChange={e => handleUploadCotizacion(e.target.files[0])} />
                     <button className="btn btn-ghost btn-sm" style={{ marginTop: 4 }} onClick={() => document.getElementById(cotizacionInputId).click()} disabled={uploadingCotizacion}>
@@ -5044,7 +5045,7 @@ function ModalTrackerEditarOficina({ pedido, onClose, onSave, notify }) {
             <FG label="N° Remito"><input value={form.nro_remito} onChange={e => set("nro_remito", e.target.value)} placeholder="Ej: 0001-00001234" /></FG>
             <FG label="Remito firmado (PDF / imagen)">
               {pedido.remito_url
-                ? <a href={pedido.remito_url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--blue)", display: "flex", alignItems: "center", gap: 4, marginTop: 6 }}> Ver remito adjunto</a>
+                ? <ArchivoLink href={pedido.remito_url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--blue)", display: "flex", alignItems: "center", gap: 4, marginTop: 6 }}> Ver remito adjunto</ArchivoLink>
                 : <>
                     <input type="file" id={remitoInputId} accept=".pdf,.jpg,.jpeg,.png" style={{ display: "none" }} onChange={e => handleUploadRemito(e.target.files[0])} />
                     <button className="btn btn-ghost btn-sm" style={{ marginTop: 4 }} onClick={() => document.getElementById(remitoInputId).click()} disabled={uploading}>
@@ -5183,11 +5184,11 @@ function PageTrackerOficina({ notify }) {
                       <td className="text-mono" style={{ fontSize: 11, color: p.fecha_entrega ? "var(--accent2)" : "var(--muted2)" }}>{p.fecha_entrega ? fmtDate(p.fecha_entrega) : "—"}</td>
                       <td style={{ fontSize: 11, color: p.nro_oc ? "var(--text)" : "var(--muted2)" }}>{p.nro_oc || "—"}</td>
                       <td>{p.cotizacion_url
-                        ? <a href={p.cotizacion_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ fontSize: 11, color: "var(--blue)" }}> Ver</a>
+                        ? <ArchivoLink href={p.cotizacion_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ fontSize: 11, color: "var(--blue)" }}> Ver</ArchivoLink>
                         : <span style={{ fontSize: 11, color: "var(--muted2)" }}>—</span>
                       }</td>
                       <td>{p.remito_url
-                        ? <a href={p.remito_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ fontSize: 11, color: "var(--blue)" }}> {p.nro_remito || "Ver"}</a>
+                        ? <ArchivoLink href={p.remito_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ fontSize: 11, color: "var(--blue)" }}> {p.nro_remito || "Ver"}</ArchivoLink>
                         : <span style={{ fontSize: 11, color: "var(--muted2)" }}>{p.nro_remito || "—"}</span>
                       }</td>
                       <td style={{ fontSize: 11, color: "var(--muted)", maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.tracker_notas || "—"}</td>
